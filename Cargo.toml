@@ -2,6 +2,10 @@
 name = "ingrid_core"
 version = "1.0.0"
 edition = "2021"
+license = "MIT"
+description = "Crossword-generating library and CLI tool"
+repository = "https://github.com/rf-/ingrid_core"
+readme = "README.md"
 
 [dependencies]
 smallvec = "1.8.0"
