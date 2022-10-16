@@ -4,16 +4,11 @@ version = "1.0.0"
 edition = "2021"
 
 [dependencies]
-bit-set = "0.5.2"
 smallvec = "1.8.0"
 instant = { version = "0.1.12", features = ["wasm-bindgen"] }
 generic-array = "0.14.5"
 lazy_static = "1.4.0"
-smallbitset = "0.5.1"
-serde_json = "1.0.83"
-priority-queue = "1.2.3"
 float-ord = "0.3.2"
-itertools = "0.10.5"
 rand = { version = "0.8.5", features = ["std", "alloc", "getrandom", "std_rng", "small_rng"] }
 
 [profile.dev]
@@ -32,4 +27,3 @@ path = "src/lib.rs"
 
 [features]
 check_invariants = []
-log_fill_process = []

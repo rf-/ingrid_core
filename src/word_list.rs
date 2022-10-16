@@ -345,11 +345,11 @@ impl WordList {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::word_list::{RawWordListEntry, WordList};
     use std::{fs, path};
 
-    fn load_dictionary() -> Vec<RawWordListEntry> {
+    pub fn load_dictionary() -> Vec<RawWordListEntry> {
         let mut path = path::PathBuf::from(file!());
         path.pop();
         path.pop();
