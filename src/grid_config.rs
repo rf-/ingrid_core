@@ -503,7 +503,7 @@ pub fn generate_grid_config_from_template_string(
                 if c == '.' || c == '#' {
                     None
                 } else {
-                    Some(c.to_string())
+                    Some(c.to_lowercase().to_string())
                 }
             })
             .collect::<Vec<_>>(),

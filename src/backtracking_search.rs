@@ -766,11 +766,11 @@ mod tests {
     use crate::grid_config::{
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
-    use crate::word_list::tests::load_dictionary;
+    use crate::word_list::tests::dictionary_path;
     use crate::word_list::WordList;
 
     fn load_word_list(max_length: usize) -> WordList {
-        WordList::new(&load_dictionary(), max_length, Some(5))
+        WordList::from_dict_file(&dictionary_path(), Some(max_length), Some(5)).unwrap()
     }
 
     fn generate_config(template: &str) -> OwnedGridConfig {

@@ -4,6 +4,8 @@ use lazy_static::lazy_static;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::path::Path;
+use std::{fmt, fs};
 
 use crate::{MAX_GLYPH_COUNT, MAX_SLOT_LENGTH};
 
@@ -185,15 +187,111 @@ pub struct RawWordListEntry {
     pub score: i32,
 }
 
+#[derive(Debug)]
+pub enum WordListError {
+    InvalidPath(String),
+    InvalidLine(String),
+    InvalidWord(String),
+    InvalidScore(String),
+}
+
+impl fmt::Display for WordListError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let string = match self {
+            WordListError::InvalidPath(path) => format!("Can't read path: {}", path),
+            WordListError::InvalidLine(line) => {
+                format!("Word list contains invalid line: '{}'", line)
+            }
+            WordListError::InvalidWord(word) => {
+                format!("Word list contains invalid word: '{}'", word)
+            }
+            WordListError::InvalidScore(score) => {
+                format!("Word list contains invalid score: '{}'", score)
+            }
+        };
+        write!(f, "{}", string)
+    }
+}
+
 impl WordList {
+    /// Instantiate a WordList based on the given `.dict` file. Convenience wrapper
+    /// around `load_dict_file` and `new`.
+    pub fn from_dict_file<P: AsRef<Path>>(
+        path: P,
+        max_length: Option<usize>,
+        max_shared_substring: Option<usize>,
+    ) -> Result<WordList, WordListError> {
+        Ok(WordList::new(
+            &WordList::load_dict_file(&path)?,
+            max_length,
+            max_shared_substring,
+        ))
+    }
+
+    /// Parse the given `.dict` file contents into RawWordListEntry structs, if possible.
+    pub fn parse_dict_file(file_contents: &str) -> Result<Vec<RawWordListEntry>, WordListError> {
+        file_contents
+            .lines()
+            .map(|line| {
+                let line_parts: Vec<_> = line.trim().split(';').collect();
+                if line_parts.len() != 2 {
+                    return Err(WordListError::InvalidLine(line.into()));
+                }
+
+                let canonical = line_parts[0].trim().to_string();
+                let normalized: String = canonical
+                    .to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect();
+                if normalized.is_empty() {
+                    return Err(WordListError::InvalidWord(line_parts[0].into()));
+                }
+
+                let score: i32 = match line_parts[1].trim().parse() {
+                    Ok(score) => score,
+                    Err(_) => {
+                        return Err(WordListError::InvalidScore(line_parts[1].into()));
+                    }
+                };
+
+                Ok(RawWordListEntry {
+                    canonical,
+                    normalized,
+                    score,
+                })
+            })
+            .collect()
+    }
+
+    /// Load the contents of the given `.dict` file into RawWordListEntry structs, if possible.
+    pub fn load_dict_file<P: AsRef<Path>>(path: P) -> Result<Vec<RawWordListEntry>, WordListError> {
+        let file_contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(_err) => {
+                return Err(WordListError::InvalidPath(format!("{:?}", path.as_ref())));
+            }
+        };
+
+        WordList::parse_dict_file(&file_contents)
+    }
+
     /// Construct a new WordList containing the given entries (omitting any that are longer than
     /// `max_length`).
     #[allow(dead_code)]
     pub fn new(
         raw_word_list: &[RawWordListEntry],
-        max_length: usize,
+        max_length: Option<usize>,
         max_shared_substring: Option<usize>,
     ) -> WordList {
+        let max_length = max_length.unwrap_or_else(|| {
+            raw_word_list
+                .iter()
+                .max_by_key(|entry| entry.normalized.len())
+                .map(|entry| entry.normalized.len())
+                .unwrap_or(0)
+        });
+
         let mut instance = WordList {
             glyphs: smallvec![],
             glyph_id_by_char: HashMap::new(),
@@ -346,43 +444,22 @@ impl WordList {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::word_list::{RawWordListEntry, WordList};
-    use std::{fs, path};
+    use crate::word_list::WordList;
+    use std::path;
+    use std::path::PathBuf;
 
-    pub fn load_dictionary() -> Vec<RawWordListEntry> {
+    pub fn dictionary_path() -> PathBuf {
         let mut path = path::PathBuf::from(file!());
         path.pop();
         path.pop();
         path.push("resources");
         path.push("spreadthewordlist.dict");
-
-        fs::read_to_string(&path)
-            .expect("Something went wrong reading the file")
-            .lines()
-            .map(|line| {
-                let line_parts: Vec<_> = line.split(';').collect();
-                let canonical = line_parts[0].to_string();
-                let normalized: String = canonical
-                    .to_lowercase()
-                    .chars()
-                    .filter(|c| c.is_alphanumeric())
-                    .collect();
-                let score: i32 = line_parts[1]
-                    .parse()
-                    .expect("Dict included non-numeric score");
-
-                RawWordListEntry {
-                    canonical,
-                    normalized,
-                    score,
-                }
-            })
-            .collect()
+        path
     }
 
     #[test]
     fn test_loads_words_up_to_max_length() {
-        let word_list = WordList::new(&load_dictionary(), 5, None);
+        let word_list = WordList::from_dict_file(&dictionary_path(), Some(5), None).unwrap();
 
         assert_eq!(word_list.max_length, 5);
         assert_eq!(word_list.words.len(), 6);

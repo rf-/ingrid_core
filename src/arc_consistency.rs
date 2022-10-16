@@ -542,19 +542,18 @@ pub fn establish_arc_consistency_for_static_grid(
 mod tests {
     use crate::arc_consistency::establish_arc_consistency_for_static_grid;
     use crate::grid_config::{generate_grid_config_from_template_string, OwnedGridConfig};
-    use crate::word_list::tests::load_dictionary;
+    use crate::word_list::tests::dictionary_path;
     use crate::word_list::WordList;
     use std::time::Instant;
-
-    fn load_word_list(max_length: usize) -> WordList {
-        WordList::new(&load_dictionary(), max_length, Some(5))
-    }
 
     fn generate_config(template: &str) -> OwnedGridConfig {
         let template = template.trim();
         let width = template.lines().map(|line| line.len()).max().unwrap();
         let height = template.lines().count();
-        generate_grid_config_from_template_string(load_word_list(width.max(height)), template, 40.0)
+        let word_list =
+            WordList::from_dict_file(&dictionary_path(), Some(width.max(height)), Some(5)).unwrap();
+
+        generate_grid_config_from_template_string(word_list, template, 40.0)
     }
 
     #[test]

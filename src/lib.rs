@@ -1,8 +1,8 @@
-mod arc_consistency;
-mod backtracking_search;
-mod grid_config;
-mod util;
-mod word_list;
+pub mod arc_consistency;
+pub mod backtracking_search;
+pub mod grid_config;
+pub mod util;
+pub mod word_list;
 
 /// Should we run extra checks to validate that we're never in an invalid state during search? This
 /// can be enabled with `--features check_invariants` when debugging or making risky algorithm

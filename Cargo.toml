@@ -10,6 +10,12 @@ generic-array = "0.14.5"
 lazy_static = "1.4.0"
 float-ord = "0.3.2"
 rand = { version = "0.8.5", features = ["std", "alloc", "getrandom", "std_rng", "small_rng"] }
+clap = { version = "4.0.15", features = ["derive"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
 
 [profile.dev]
 codegen-units = 1
@@ -24,6 +30,10 @@ opt-level = 3
 [lib]
 name = "ingrid_core"
 path = "src/lib.rs"
+
+[[bin]]
+name = "ingrid_core"
+path = "src/bin.rs"
 
 [features]
 check_invariants = []
