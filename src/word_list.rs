@@ -247,11 +247,8 @@ impl WordList {
                     return Err(WordListError::InvalidWord(line_parts[0].into()));
                 }
 
-                let score: i32 = match line_parts[1].trim().parse() {
-                    Ok(score) => score,
-                    Err(_) => {
-                        return Err(WordListError::InvalidScore(line_parts[1].into()));
-                    }
+                let Ok(score) = line_parts[1].trim().parse::<i32>() else {
+                    return Err(WordListError::InvalidScore(line_parts[1].into()));
                 };
 
                 Ok(RawWordListEntry {
@@ -265,11 +262,8 @@ impl WordList {
 
     /// Load the contents of the given `.dict` file into `RawWordListEntry` structs, if possible.
     pub fn load_dict_file<P: AsRef<Path>>(path: P) -> Result<Vec<RawWordListEntry>, WordListError> {
-        let file_contents = match fs::read_to_string(&path) {
-            Ok(contents) => contents,
-            Err(_err) => {
-                return Err(WordListError::InvalidPath(format!("{:?}", path.as_ref())));
-            }
+        let Ok(file_contents) = fs::read_to_string(&path) else {
+            return Err(WordListError::InvalidPath(format!("{:?}", path.as_ref())));
         };
 
         WordList::parse_dict_file(&file_contents)

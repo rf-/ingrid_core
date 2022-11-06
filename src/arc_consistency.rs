@@ -253,10 +253,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             // glyph in this position, and there's a crossing entry that has at least one option
             // relying on the glyph, enqueue the cell so that we can propagate the impact further.
             if glyph_counts_for_cell[glyph_id] == 0 {
-                let crossing = &slot_config.crossings[cell_idx];
-                let crossing = if let Some(crossing) = crossing {
-                    crossing
-                } else {
+                let Some(crossing) = &slot_config.crossings[cell_idx] else {
                     continue;
                 };
 
@@ -311,11 +308,11 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 });
 
             // If there are no queued slots left, we're done with this AC pass.
-            let slot_id = match slot_id {
-                Some(slot_id) => slot_id,
-                None => {
-                    break;
-                }
+            // TODO: Use let-else here once IntelliJ's dead-code analysis stops breaking on it.
+            let slot_id = if let Some(slot_id) = slot_id {
+                slot_id
+            } else {
+                break;
             };
 
             // We want to examine the slot's cells in descending order of crossing weight.
@@ -529,7 +526,7 @@ pub fn establish_arc_consistency_for_static_grid(
 
     let adapter = Adapter { config };
 
-    match establish_arc_consistency(
+    establish_arc_consistency(
         config,
         &adapter,
         &remaining_option_counts,
@@ -537,10 +534,8 @@ pub fn establish_arc_consistency_for_static_grid(
         &slot_weights,
         &fixed_slots,
         None,
-    ) {
-        Ok(ArcConsistencySuccess { eliminations }) => Ok(eliminations),
-        Err(error) => Err(error),
-    }
+    )
+    .map(|ArcConsistencySuccess { eliminations }| eliminations)
 }
 
 #[cfg(test)]

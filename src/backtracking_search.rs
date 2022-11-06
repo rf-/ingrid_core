@@ -633,14 +633,12 @@ pub fn find_fill_for_seed(
             // nor `slot_id != word_id` are possible. We should undo the impact of that
             // choice and then continue the backtracking loop to see if it's possible to propagate
             // the opposite of the choice.
-            undoing_choice = match choices.pop() {
-                Some(choice) => choice,
-                None => {
-                    // If there are no previous choices, we've now proven that the whole grid is
-                    // unsolvable.
-                    return Err(FillFailure::HardFailure);
-                }
+            let Some(last_choice) = choices.pop() else {
+                // If there are no previous choices, we've now proven that the whole grid is
+                // unsolvable.
+                return Err(FillFailure::HardFailure);
             };
+            undoing_choice = last_choice;
 
             slots[undoing_choice.slot_id].clear_choice();
 
