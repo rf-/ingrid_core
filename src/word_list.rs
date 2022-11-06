@@ -21,23 +21,22 @@ lazy_static! {
             ("jx", 8),
             ("qz", 10),
         ];
-        HashMap::from_iter(
-            chars_and_scores
-                .iter()
-                .flat_map(|(chars_str, score)| chars_str.chars().map(|char| (char, *score))),
-        )
+        chars_and_scores
+            .iter()
+            .flat_map(|(chars_str, score)| chars_str.chars().map(|char| (char, *score)))
+            .collect()
     };
 }
 
-/// An identifier for a given letter or symbol, based on its index in the WordList's `glyphs`
+/// An identifier for a given letter or symbol, based on its index in the `WordList`'s `glyphs`
 /// field.
 pub type GlyphId = usize;
 
-/// An identifier for a given word, based on its index in the WordList's `words` field (scoped to
+/// An identifier for a given word, based on its index in the `WordList`'s `words` field (scoped to
 /// the relevant length bucket).
 pub type WordId = usize;
 
-/// An identifier that fully specifies a word by including both its length and WordId.
+/// An identifier that fully specifies a word by including both its length and `WordId`.
 pub type GlobalWordId = (usize, WordId);
 
 /// A struct representing a word in the word list.
@@ -83,7 +82,7 @@ struct DupeIndex<N: ArrayLength<GlyphId>> {
 }
 
 impl<N: ArrayLength<GlyphId>> Default for DupeIndex<N> {
-    /// Build an empty DupeIndex.
+    /// Build an empty `DupeIndex`.
     fn default() -> Self {
         DupeIndex {
             window_size: <N as Unsigned>::to_usize(),
@@ -94,11 +93,11 @@ impl<N: ArrayLength<GlyphId>> Default for DupeIndex<N> {
     }
 }
 
-/// Interface representing a DupeIndex with any window size.
+/// Interface representing a `DupeIndex` with any window size.
 pub trait AnyDupeIndex {
     fn window_size(&self) -> usize;
     fn add_word(&mut self, word_id: WordId, word: &Word);
-    fn get_dupes_by_length(&self, word_gid: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
+    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
 }
 
 impl<N: ArrayLength<GlyphId>> AnyDupeIndex for DupeIndex<N> {
@@ -111,7 +110,7 @@ impl<N: ArrayLength<GlyphId>> AnyDupeIndex for DupeIndex<N> {
     /// Record a word in the index, adding it to the groups representing each of its
     /// `window_size`-length substrings.
     fn add_word(&mut self, word_id: WordId, word: &Word) {
-        let word_gid = (word.glyphs.len(), word_id);
+        let global_word_id = (word.glyphs.len(), word_id);
         let mut group_keys: Vec<usize> = vec![];
 
         for substring in word.glyphs.windows(self.window_size) {
@@ -119,24 +118,24 @@ impl<N: ArrayLength<GlyphId>> AnyDupeIndex for DupeIndex<N> {
             let existing_group_key = self.group_key_by_substring.get(&substring);
 
             if let Some(&existing_group_key) = existing_group_key {
-                self.groups[existing_group_key].push(word_gid);
+                self.groups[existing_group_key].push(global_word_id);
                 group_keys.push(existing_group_key);
             } else {
                 let group_key = self.groups.len();
-                self.groups.push(vec![word_gid]);
+                self.groups.push(vec![global_word_id]);
                 self.group_key_by_substring.insert(substring, group_key);
                 group_keys.push(group_key);
             }
         }
 
-        self.group_keys_by_word.insert(word_gid, group_keys);
+        self.group_keys_by_word.insert(global_word_id, group_keys);
     }
 
     /// For a given word, get a map containing all words that duplicate it, indexed by their length.
-    fn get_dupes_by_length(&self, word_gid: GlobalWordId) -> HashMap<usize, HashSet<WordId>> {
+    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>> {
         let mut dupes_by_length: HashMap<usize, HashSet<WordId>> = HashMap::new();
 
-        if let Some(group_ids) = self.group_keys_by_word.get(&word_gid) {
+        if let Some(group_ids) = self.group_keys_by_word.get(&global_word_id) {
             for &group_id in group_ids {
                 for &(length, word) in &self.groups[group_id] {
                     dupes_by_length
@@ -179,7 +178,7 @@ pub struct WordList {
     pub max_length: usize,
 }
 
-/// A single word list entry, as provided when instantiating or updating WordList.
+/// A single word list entry, as provided when instantiating or updating `WordList`.
 #[allow(dead_code)]
 pub struct RawWordListEntry {
     pub normalized: String,
@@ -214,7 +213,7 @@ impl fmt::Display for WordListError {
 }
 
 impl WordList {
-    /// Instantiate a WordList based on the given `.dict` file. Convenience wrapper
+    /// Instantiate a `WordList` based on the given `.dict` file. Convenience wrapper
     /// around `load_dict_file` and `new`.
     pub fn from_dict_file<P: AsRef<Path>>(
         path: P,
@@ -228,7 +227,7 @@ impl WordList {
         ))
     }
 
-    /// Parse the given `.dict` file contents into RawWordListEntry structs, if possible.
+    /// Parse the given `.dict` file contents into `RawWordListEntry` structs, if possible.
     pub fn parse_dict_file(file_contents: &str) -> Result<Vec<RawWordListEntry>, WordListError> {
         file_contents
             .lines()
@@ -256,15 +255,15 @@ impl WordList {
                 };
 
                 Ok(RawWordListEntry {
-                    canonical,
                     normalized,
+                    canonical,
                     score,
                 })
             })
             .collect()
     }
 
-    /// Load the contents of the given `.dict` file into RawWordListEntry structs, if possible.
+    /// Load the contents of the given `.dict` file into `RawWordListEntry` structs, if possible.
     pub fn load_dict_file<P: AsRef<Path>>(path: P) -> Result<Vec<RawWordListEntry>, WordListError> {
         let file_contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
@@ -276,9 +275,10 @@ impl WordList {
         WordList::parse_dict_file(&file_contents)
     }
 
-    /// Construct a new WordList containing the given entries (omitting any that are longer than
+    /// Construct a new `WordList` containing the given entries (omitting any that are longer than
     /// `max_length`).
     #[allow(dead_code)]
+    #[must_use]
     pub fn new(
         raw_word_list: &[RawWordListEntry],
         max_length: Option<usize>,
@@ -287,15 +287,15 @@ impl WordList {
         let max_length = max_length.unwrap_or_else(|| {
             raw_word_list
                 .iter()
-                .max_by_key(|entry| entry.normalized.len())
                 .map(|entry| entry.normalized.len())
+                .max()
                 .unwrap_or(0)
         });
 
         let mut instance = WordList {
             glyphs: smallvec![],
             glyph_id_by_char: HashMap::new(),
-            words: (0..max_length + 1).map(|_| vec![]).collect(),
+            words: (0..=max_length).map(|_| vec![]).collect(),
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             max_length,
@@ -325,7 +325,7 @@ impl WordList {
             letter_score: raw_entry
                 .normalized
                 .chars()
-                .map(|char| LETTER_POINTS.get(&char).cloned().unwrap_or(3))
+                .map(|char| LETTER_POINTS.get(&char).copied().unwrap_or(3))
                 .sum::<i32>() as f32,
             hidden,
         });
@@ -393,7 +393,7 @@ impl WordList {
     /// every letter up front, because word list entries may also contain numbers or non-English
     /// letters.
     pub fn glyph_id_for_char(&mut self, ch: char) -> GlyphId {
-        self.glyph_id_by_char.get(&ch).cloned().unwrap_or_else(|| {
+        self.glyph_id_by_char.get(&ch).copied().unwrap_or_else(|| {
             self.glyphs.push(ch);
             let id = self.glyphs.len() - 1;
             self.glyph_id_by_char.insert(ch, id);
@@ -407,7 +407,7 @@ impl WordList {
         let mut new_dupe_index = WordList::instantiate_dupe_index(max_shared_substring);
 
         if let Some(new_dupe_index) = &mut new_dupe_index {
-            for bucket in self.words.iter() {
+            for bucket in &self.words {
                 for (word_id, word) in bucket.iter().enumerate() {
                     new_dupe_index.add_word(word_id, word);
                 }
@@ -417,18 +417,15 @@ impl WordList {
         self.dupe_index = new_dupe_index;
     }
 
-    /// Generate a DupeIndex with the appropriate window size for the given `max_shared_substring`
+    /// Generate a `DupeIndex` with the appropriate window size for the given `max_shared_substring`
     /// setting. This is ugly because we want to be able to use raw arrays in the implementation of
-    /// DupeIndex, so their lengths need to be known at compile time.
+    /// `DupeIndex`, so their lengths need to be known at compile time.
     fn instantiate_dupe_index(
         max_shared_substring: Option<usize>,
     ) -> Option<Box<dyn AnyDupeIndex + Send + Sync>> {
         // The type param is one higher than `max_shared_substring` because it's smallest forbidden
         // overlap, not max shared substring.
         match max_shared_substring {
-            Some(0) => None,
-            Some(1) => None,
-            Some(2) => None,
             Some(3) => Some(Box::new(DupeIndex::<U4>::default())),
             Some(4) => Some(Box::new(DupeIndex::<U5>::default())),
             Some(5) => Some(Box::new(DupeIndex::<U6>::default())),
@@ -448,6 +445,7 @@ pub mod tests {
     use std::path;
     use std::path::PathBuf;
 
+    #[must_use]
     pub fn dictionary_path() -> PathBuf {
         let mut path = path::PathBuf::from(file!());
         path.pop();
@@ -458,6 +456,8 @@ pub mod tests {
     }
 
     #[test]
+    #[allow(clippy::bool_assert_comparison)]
+    #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
         let word_list = WordList::from_dict_file(&dictionary_path(), Some(5), None).unwrap();
 

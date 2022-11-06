@@ -3,12 +3,17 @@ use smallvec::SmallVec;
 use crate::word_list::{WordId, WordList};
 use crate::MAX_GLYPH_COUNT;
 
-/// Structure tracking number of occurrences in a slot's options of each glyph in each cell.
-/// TODO: fix doc
+/// Structure used to efficiently prune options based on their crossings. One of these reflects all
+/// of the currently-available options for a single slot.
+///
+/// The outer `Vec` has an entry for each cell; each of these entries consists of a `SmallVec`
+/// indexed by `GlyphId`, containing the number of times that glyph occurs in that position in
+/// all of the available options.
+///
 pub type GlyphCountsByCell = Vec<SmallVec<[u32; MAX_GLYPH_COUNT]>>;
 
 /// Initialize the `glyph_counts_by_cell` structure for a slot.
-/// TODO: fix doc
+#[must_use]
 pub fn build_glyph_counts_by_cell(
     word_list: &WordList,
     slot_length: usize,

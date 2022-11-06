@@ -69,6 +69,7 @@ pub struct Slot {
     /// * `Some(Some(id))` means "this option has been eliminated by the choice in slot `id`"
     /// * `Some(None)` means "this option has been eliminated regardless of any choices"
     /// * `None` means "this option has not been eliminated (or was never available)"
+    #[allow(clippy::option_option)]
     eliminations: Vec<Option<Option<SlotId>>>,
 
     /// To enable us to quickly validate crossing slots, we maintain a count of the number of
@@ -180,9 +181,7 @@ impl Slot {
                 word_id,
             })
             .or_else(|| {
-                if self.remaining_option_count != 1 {
-                    None
-                } else {
+                if self.remaining_option_count == 1 {
                     let word_id = config.slot_options[self.id]
                         .iter()
                         .find(|&&word_id| self.eliminations[word_id].is_none());
@@ -191,6 +190,8 @@ impl Slot {
                         slot_id: self.id,
                         word_id,
                     })
+                } else {
+                    None
                 }
             })
     }
@@ -253,18 +254,50 @@ enum ArcConsistencyMode {
 /// Within the context of a fill attempt, either establish initial arc consistency, propagate the
 /// impact of a choice, or propagate the impact of an elimination. Also update crossing weights
 /// if it turns out to be impossible to achieve consistency (a "domain wipeout").
+#[allow(clippy::too_many_lines)]
 fn maintain_arc_consistency(
     config: &GridConfig,
     slots: &mut [Slot],
     crossing_weights: &mut [f32],
     slot_weights: &[f32],
-    mode: ArcConsistencyMode,
+    mode: &ArcConsistencyMode,
     time: &mut Duration,
 ) -> bool {
+    struct Adapter<'a> {
+        config: &'a GridConfig<'a>,
+        slots: &'a mut [Slot],
+    }
+
+    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
+        fn is_word_eliminated(&self, slot_id: SlotId, word_id: WordId) -> bool {
+            self.slots[slot_id].eliminations[word_id].is_some()
+        }
+
+        fn get_glyph_counts(&self, slot_id: SlotId) -> GlyphCountsByCell {
+            self.slots[slot_id]
+                .fixed_glyph_counts_by_cell
+                .clone()
+                .unwrap_or_else(|| self.slots[slot_id].glyph_counts_by_cell.clone())
+        }
+
+        fn get_single_option(
+            &self,
+            slot_id: SlotId,
+            eliminations: &HashSet<WordId>,
+        ) -> Option<WordId> {
+            self.slots[slot_id].fixed_word_id.or_else(|| {
+                self.config.slot_options[slot_id]
+                    .iter()
+                    .find(|word_id| !eliminations.contains(word_id))
+                    .copied()
+            })
+        }
+    }
+
     let start = Instant::now();
 
     // First, if we're testing a choice or elimination, update the relevant state provisionally.
-    match &mode {
+    match mode {
         ArcConsistencyMode::Choice(choice) => {
             slots[choice.slot_id].choose_word(config, choice.word_id);
         }
@@ -273,7 +306,7 @@ fn maintain_arc_consistency(
             slots[choice.slot_id].add_elimination(config, choice.word_id, *blamed_slot_id);
         }
 
-        _ => {}
+        ArcConsistencyMode::Initial => {}
     };
 
     let remaining_option_counts = slots
@@ -306,41 +339,14 @@ fn maintain_arc_consistency(
             .collect()
     };
 
-    struct Adapter<'a> {
-        config: &'a GridConfig<'a>,
-        slots: &'a mut [Slot],
-    }
-    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
-        fn is_word_eliminated(&self, slot_id: SlotId, word_id: WordId) -> bool {
-            self.slots[slot_id].eliminations[word_id].is_some()
-        }
-        fn get_glyph_counts(&self, slot_id: SlotId) -> GlyphCountsByCell {
-            self.slots[slot_id]
-                .fixed_glyph_counts_by_cell
-                .clone()
-                .unwrap_or_else(|| self.slots[slot_id].glyph_counts_by_cell.clone())
-        }
-        fn get_single_option(
-            &self,
-            slot_id: SlotId,
-            eliminations: &HashSet<WordId>,
-        ) -> Option<WordId> {
-            self.slots[slot_id].fixed_word_id.or_else(|| {
-                self.config.slot_options[slot_id]
-                    .iter()
-                    .find(|word_id| !eliminations.contains(word_id))
-                    .cloned()
-            })
-        }
-    }
-
-    let starting_slot_id = match &mode {
+    let starting_slot_id = match mode {
         ArcConsistencyMode::Initial => None,
-        ArcConsistencyMode::Choice(choice) => Some(choice.slot_id),
-        ArcConsistencyMode::Elimination(choice, _) => Some(choice.slot_id),
+        ArcConsistencyMode::Choice(choice) | ArcConsistencyMode::Elimination(choice, _) => {
+            Some(choice.slot_id)
+        }
     };
 
-    let blamed_slot_id = match &mode {
+    let blamed_slot_id = match mode {
         ArcConsistencyMode::Initial => None,
         ArcConsistencyMode::Choice(choice) => Some(choice.slot_id),
         ArcConsistencyMode::Elimination(_, blamed_slot_id) => *blamed_slot_id,
@@ -369,7 +375,7 @@ fn maintain_arc_consistency(
         // If we failed, we need to undo any provisional changes we made above and update our
         // crossing weights to reflect the causes of the failure.
         Err(ArcConsistencyFailure { weight_updates }) => {
-            match &mode {
+            match mode {
                 ArcConsistencyMode::Choice(choice) => {
                     slots[choice.slot_id].clear_choice();
                 }
@@ -378,7 +384,7 @@ fn maintain_arc_consistency(
                     slots[choice.slot_id].remove_elimination(config, choice.word_id);
                 }
 
-                _ => {}
+                ArcConsistencyMode::Initial => {}
             };
 
             for (slot_id, weight) in crossing_weights.iter_mut().enumerate() {
@@ -391,7 +397,7 @@ fn maintain_arc_consistency(
         }
     };
 
-    *time += Instant::now() - start;
+    *time += start.elapsed();
 
     success
 }
@@ -471,6 +477,7 @@ pub enum FillFailure {
 /// Search for a valid fill for the given grid, bailing out if we reach the deadline or the
 /// specified number of backtracks. We receive some state as arguments that can be shared between
 /// multiple retries of the same overall search attempt.
+#[allow(clippy::too_many_lines)]
 pub fn find_fill_for_seed(
     config: &GridConfig,
     slots: &SmallVec<[Slot; MAX_SLOT_COUNT]>,
@@ -522,34 +529,31 @@ pub fn find_fill_for_seed(
 
         // Choose which slot to try to fill.
         let slot_weights = calculate_slot_weights(config, &slots, crossing_weights);
-        let slot_id = match choose_next_slot(
+        let Some(slot_id) = choose_next_slot(
             &slots,
             &slot_weights,
             last_slot_id,
             &mut rng,
             &slot_dist,
             &mut statistics,
-        ) {
-            Some(slot_id) => slot_id,
-            None => {
-                // If there are no more slots to fill, it means we're done.
-                statistics.total_time = start.elapsed();
+        ) else {
+            // If there are no more slots to fill, it means we're done.
+            statistics.total_time = start.elapsed();
 
-                // We need to build a `choices` array that includes both choices we made explicitly
-                // and ones that were made implicitly by maintaining arc consistency.
-                let choices = slots
-                    .into_iter()
-                    .map(|slot| {
-                        slot.get_choice(config)
-                            .expect("Failed to identify single choice for slot")
-                    })
-                    .collect();
+            // We need to build a `choices` array that includes both choices we made explicitly
+            // and ones that were made implicitly by maintaining arc consistency.
+            let choices = slots
+                .into_iter()
+                .map(|slot| {
+                    slot.get_choice(config)
+                        .expect("Failed to identify single choice for slot")
+                })
+                .collect();
 
-                return Ok(FillSuccess {
-                    statistics,
-                    choices,
-                });
-            }
+            return Ok(FillSuccess {
+                statistics,
+                choices,
+            });
         };
 
         // If we're still on the same slot as last time, start from where we left off instead of
@@ -569,9 +573,11 @@ pub fn find_fill_for_seed(
             .take(RANDOM_WORD_WEIGHTS.len())
             .collect();
 
-        if word_candidates.is_empty() {
-            panic!("Unable to find option for slot {:?}", slots[slot_id]);
-        }
+        assert!(
+            !word_candidates.is_empty(),
+            "Unable to find option for slot {:?}",
+            slots[slot_id]
+        );
 
         // Choose one of the candidates at (weighted) random.
         let (_, &word_id) =
@@ -590,7 +596,7 @@ pub fn find_fill_for_seed(
             &mut slots,
             crossing_weights,
             &slot_weights,
-            ArcConsistencyMode::Choice(choice.clone()),
+            &ArcConsistencyMode::Choice(choice.clone()),
             &mut statistics.choice_arc_consistency_time,
         ) {
             // If we successfully propagated constraints for this choice, we can record it and
@@ -611,7 +617,7 @@ pub fn find_fill_for_seed(
                 &mut slots,
                 crossing_weights,
                 &slot_weights,
-                ArcConsistencyMode::Elimination(
+                &ArcConsistencyMode::Elimination(
                     undoing_choice.clone(),
                     choices.last().map(|choice| choice.slot_id),
                 ),
@@ -687,11 +693,8 @@ pub fn find_fill(
                 eliminations: vec![None; config.word_list.words[slot_config.length].len()],
                 remaining_option_count: config.slot_options[slot_config.id].len(),
                 fixed_word_id: if is_fixed {
-                    if config.slot_options[slot_config.id].len() != 1 {
-                        panic!("Slot has complete fill but option count != 1?");
-                    } else {
-                        Some(config.slot_options[slot_config.id][0])
-                    }
+                    assert_eq!(config.slot_options[slot_config.id].len(), 1);
+                    Some(config.slot_options[slot_config.id][0])
                 } else {
                     None
                 },
@@ -718,7 +721,7 @@ pub fn find_fill(
         &mut slots,
         &mut crossing_weights,
         &slot_weights,
-        ArcConsistencyMode::Initial,
+        &ArcConsistencyMode::Initial,
         &mut initial_arc_consistency_time,
     ) {
         return Err(FillFailure::HardFailure);
@@ -775,7 +778,7 @@ mod tests {
 
     fn generate_config(template: &str) -> OwnedGridConfig {
         let template = template.trim();
-        let width = template.lines().map(|line| line.len()).max().unwrap();
+        let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
         generate_grid_config_from_template_string(load_word_list(width.max(height)), template, 40.0)
     }

@@ -15,7 +15,7 @@ use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 /// a domain wipeout).
 pub type CrossingId = usize;
 
-/// An identifier for a given slot, based on its index in the GridConfig's `slot_configs` field.
+/// An identifier for a given slot, based on its index in the `GridConfig`'s `slot_configs` field.
 pub type SlotId = usize;
 
 /// Zero-indexed x and y coords for a cell in the grid, where y = 0 in the top row.
@@ -50,6 +50,7 @@ pub struct SlotConfig {
 
 impl SlotConfig {
     /// Generate the coords for each cell of this slot.
+    #[must_use]
     pub fn cell_coords(&self) -> Vec<GridCoord> {
         (0..self.length)
             .map(|cell_idx| match self.direction {
@@ -60,6 +61,7 @@ impl SlotConfig {
     }
 
     /// Generate the indices of this slot's cells in a flat fill array like `GridConfig.fill`.
+    #[must_use]
     pub fn cell_fill_indices(&self, grid_width: usize) -> Vec<usize> {
         self.cell_coords()
             .iter()
@@ -68,6 +70,7 @@ impl SlotConfig {
     }
 
     /// Get the values of this slot's cells in a flat fill array like `GridConfig.fill`.
+    #[must_use]
     pub fn fill(&self, fill: &[Option<GlyphId>], grid_width: usize) -> Vec<Option<GlyphId>> {
         self.cell_fill_indices(grid_width)
             .iter()
@@ -76,6 +79,7 @@ impl SlotConfig {
     }
 
     /// Get this slot's `fill` if and only if all of its cells are populated.
+    #[must_use]
     pub fn complete_fill(
         &self,
         fill: &[Option<GlyphId>],
@@ -115,7 +119,7 @@ pub struct GridConfig<'a> {
     pub crossing_count: usize,
 }
 
-/// A struct that owns a copy of each piece of information needed by GridConfig.
+/// A struct that owns a copy of each piece of information needed by `GridConfig`.
 pub struct OwnedGridConfig {
     pub word_list: WordList,
     pub fill: Vec<Option<GlyphId>>,
@@ -220,20 +224,22 @@ impl GridEntry {
     }
 }
 
-/// Given GridEntry structs specifying the positions of the slots in a grid, generate SlotConfigs
-/// containing derived information about crossings, etc.
+/// Given `GridEntry` structs specifying the positions of the slots in a grid, generate
+/// `SlotConfig`s containing derived information about crossings, etc.
+#[must_use]
 pub fn generate_slot_configs(
     entries: &[GridEntry],
 ) -> (SmallVec<[SlotConfig; MAX_SLOT_COUNT]>, usize) {
-    let mut slot_configs: SmallVec<[SlotConfig; MAX_SLOT_COUNT]> = smallvec![];
-
-    // Build a map from cell location to entries involved, which we can then use to calculate
-    // crossings.
     #[derive(Debug)]
     struct GridCell {
         entries: Vec<(usize, usize)>, // (entry index, cell index within entry)
         number: Option<u32>,
     }
+
+    let mut slot_configs: SmallVec<[SlotConfig; MAX_SLOT_COUNT]> = smallvec![];
+
+    // Build a map from cell location to entries involved, which we can then use to calculate
+    // crossings.
     let mut cell_by_loc: HashMap<GridCoord, GridCell> = HashMap::new();
 
     for (entry_idx, entry) in entries.iter().enumerate() {
@@ -246,7 +252,7 @@ pub fn generate_slot_configs(
         }
     }
 
-    let mut ordered_coords: Vec<_> = cell_by_loc.keys().cloned().collect();
+    let mut ordered_coords: Vec<_> = cell_by_loc.keys().copied().collect();
     ordered_coords.sort_by_key(|&(x, y)| (y, x));
     let mut current_number = 1;
     for coord in ordered_coords {
@@ -337,7 +343,7 @@ pub fn generate_slot_options(
         // If the slot is fully specified, we need to either use an existing word or create a new
         // (hidden) one.
         let complete_fill: Option<SmallVec<[GlyphId; MAX_SLOT_COUNT]>> =
-            entry_fill.iter().cloned().collect();
+            entry_fill.iter().copied().collect();
 
         if let Some(complete_fill) = complete_fill {
             // Look for an existing word matching the slot's fill. Note that we don't care whether
@@ -388,7 +394,8 @@ pub fn generate_slot_options(
     slot_options
 }
 
-/// Generate an OwnedGridConfig representing a grid with specified entries.
+/// Generate an `OwnedGridConfig` representing a grid with specified entries.
+#[must_use]
 pub fn generate_grid_config<'a>(
     mut word_list: WordList,
     entries: &'a [GridEntry],
@@ -428,25 +435,12 @@ pub fn generate_grid_config<'a>(
 /// Generate a grid config from a string template, with . representing empty cells, # representing
 /// blocks, and letters representing themselves.
 #[allow(dead_code)]
+#[must_use]
 pub fn generate_grid_config_from_template_string(
     word_list: WordList,
     template: &str,
     min_score: f32,
 ) -> OwnedGridConfig {
-    let template: Vec<Vec<char>> = template
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                None
-            } else {
-                Some(line.chars().collect())
-            }
-        })
-        .collect();
-
-    let mut entries: Vec<GridEntry> = vec![];
-
     fn build_words(template: &[Vec<char>]) -> Vec<Vec<GridCoord>> {
         let mut result: Vec<Vec<GridCoord>> = vec![];
 
@@ -472,6 +466,20 @@ pub fn generate_grid_config_from_template_string(
         result
     }
 
+    let template: Vec<Vec<char>> = template
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                None
+            } else {
+                Some(line.chars().collect())
+            }
+        })
+        .collect();
+
+    let mut entries: Vec<GridEntry> = vec![];
+
     for coords in build_words(&template) {
         entries.push(GridEntry {
             loc: coords[0],
@@ -485,7 +493,7 @@ pub fn generate_grid_config_from_template_string(
         .collect();
 
     for coords in build_words(&transposed_template) {
-        let coords: Vec<GridCoord> = coords.iter().cloned().map(|(y, x)| (x, y)).collect();
+        let coords: Vec<GridCoord> = coords.iter().copied().map(|(y, x)| (x, y)).collect();
         entries.push(GridEntry {
             loc: coords[0],
             len: coords.len(),
@@ -522,6 +530,7 @@ pub struct Choice {
 
 /// Turn the given grid config and fill choices into a rendered string.
 #[allow(dead_code)]
+#[must_use]
 pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
     let max_x = config
         .slot_configs
@@ -563,7 +572,7 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
                 ),
             };
 
-            grid[y].replace_range(x..x + 1, &config.word_list.glyphs[glyph].to_string());
+            grid[y].replace_range(x..=x, &config.word_list.glyphs[glyph].to_string());
         }
     }
 

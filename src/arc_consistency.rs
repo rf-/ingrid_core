@@ -90,6 +90,7 @@ impl ArcConsistencySlotState {
     /// Get the current glyph counts for this slot, lazily fetching initial values from the adapter
     /// if needed.
     #[inline(always)]
+    #[allow(clippy::inline_always)]
     fn get_glyph_counts<Adapter: ArcConsistencyAdapter>(
         &mut self,
         adapter: &Adapter,
@@ -104,6 +105,7 @@ impl ArcConsistencySlotState {
 /// Determine which eliminations are needed to bring the grid into an arc-consistent state.
 /// If it's impossible to make the grid consistent, return weight values reflecting which
 /// constraints are responsible for the failure (sort of).
+#[allow(clippy::too_many_lines)]
 pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     config: &GridConfig,
     adapter: &Adapter,
@@ -197,30 +199,29 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             let initial_count = initial_option_counts[slot_id] as f32;
 
             return Err(ArcConsistencyFailure {
-                weight_updates: HashMap::from_iter(
-                    slot_config
-                        .crossings
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(cell_idx, crossing)| {
-                            crossing.as_ref().map(|crossing| {
-                                // We'll increment the weight of each constraint affecting this slot
-                                // by the number of options it removed divided by the number of
-                                // options we started with (IOW, the percentage of the slot's
-                                // options that were removed by this constraint).
-                                //
-                                // You could argue that we should also track things like uniqueness
-                                // constraints here, but this would add a lot of extra work to
-                                // calculating slot weights since we'd have to check every slot in
-                                // the grid pairwise every time, so it doesn't really seem worth it.
-                                (
-                                    crossing.crossing_id,
-                                    (slot_states[slot_id].blame_counts[cell_idx] as f32)
-                                        / initial_count,
-                                )
-                            })
-                        }),
-                ),
+                weight_updates: slot_config
+                    .crossings
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(cell_idx, crossing)| {
+                        crossing.as_ref().map(|crossing| {
+                            // We'll increment the weight of each constraint affecting this slot
+                            // by the number of options it removed divided by the number of
+                            // options we started with (IOW, the percentage of the slot's
+                            // options that were removed by this constraint).
+                            //
+                            // You could argue that we should also track things like uniqueness
+                            // constraints here, but this would add a lot of extra work to
+                            // calculating slot weights since we'd have to check every slot in
+                            // the grid pairwise every time, so it doesn't really seem worth it.
+                            (
+                                crossing.crossing_id,
+                                (slot_states[slot_id].blame_counts[cell_idx] as f32)
+                                    / initial_count,
+                            )
+                        })
+                    })
+                    .collect(),
             });
         }
 
@@ -330,7 +331,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
 
             // For each queued cell, go through the crossing slot's options and eliminate any that
             // are incompatible with this slot's possible values.
-            for cell_idx in cell_idxs.into_iter() {
+            for cell_idx in cell_idxs {
                 let &Crossing {
                     other_slot_id,
                     other_slot_cell,
@@ -468,6 +469,35 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
 pub fn establish_arc_consistency_for_static_grid(
     config: &GridConfig,
 ) -> Result<Vec<HashSet<WordId>>, ArcConsistencyFailure> {
+    struct Adapter<'a> {
+        config: &'a GridConfig<'a>,
+    }
+
+    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
+        fn is_word_eliminated(&self, _slot_id: SlotId, _word_id: WordId) -> bool {
+            false
+        }
+
+        fn get_glyph_counts(&self, slot_id: SlotId) -> GlyphCountsByCell {
+            build_glyph_counts_by_cell(
+                self.config.word_list,
+                self.config.slot_configs[slot_id].length,
+                &self.config.slot_options[slot_id],
+            )
+        }
+
+        fn get_single_option(
+            &self,
+            slot_id: SlotId,
+            eliminations: &HashSet<WordId>,
+        ) -> Option<WordId> {
+            self.config.slot_options[slot_id]
+                .iter()
+                .find(|word_id| !eliminations.contains(word_id))
+                .copied()
+        }
+    }
+
     let remaining_option_counts: Vec<usize> = (0..config.slot_configs.len())
         .map(|slot_id| config.slot_options[slot_id].len())
         .collect();
@@ -497,31 +527,6 @@ pub fn establish_arc_consistency_for_static_grid(
         })
         .collect();
 
-    struct Adapter<'a> {
-        config: &'a GridConfig<'a>,
-    }
-    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
-        fn is_word_eliminated(&self, _slot_id: SlotId, _word_id: WordId) -> bool {
-            false
-        }
-        fn get_glyph_counts(&self, slot_id: SlotId) -> GlyphCountsByCell {
-            build_glyph_counts_by_cell(
-                self.config.word_list,
-                self.config.slot_configs[slot_id].length,
-                &self.config.slot_options[slot_id],
-            )
-        }
-        fn get_single_option(
-            &self,
-            slot_id: SlotId,
-            eliminations: &HashSet<WordId>,
-        ) -> Option<WordId> {
-            self.config.slot_options[slot_id]
-                .iter()
-                .find(|word_id| !eliminations.contains(word_id))
-                .cloned()
-        }
-    }
     let adapter = Adapter { config };
 
     match establish_arc_consistency(
@@ -548,7 +553,7 @@ mod tests {
 
     fn generate_config(template: &str) -> OwnedGridConfig {
         let template = template.trim();
-        let width = template.lines().map(|line| line.len()).max().unwrap();
+        let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
         let word_list =
             WordList::from_dict_file(&dictionary_path(), Some(width.max(height)), Some(5)).unwrap();
@@ -594,9 +599,8 @@ mod tests {
         let checkpoint = start.elapsed();
         println!("Slot options eliminated in {:?}", start.elapsed());
 
-        for slot_id in 0..grid_config.slot_configs.len() {
-            grid_config.slot_options[slot_id]
-                .retain(|word_id| !eliminations_by_slot[slot_id].contains(word_id));
+        for (slot_id, slot_options) in grid_config.slot_options.iter_mut().enumerate() {
+            slot_options.retain(|word_id| !eliminations_by_slot[slot_id].contains(word_id));
         }
 
         println!("Options pruned in {:?}", start.elapsed() - checkpoint);
