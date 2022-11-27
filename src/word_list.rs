@@ -1,5 +1,3 @@
-use generic_array::typenum::{Unsigned, U10, U11, U4, U5, U6, U7, U8, U9};
-use generic_array::{ArrayLength, GenericArray};
 use lazy_static::lazy_static;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
@@ -67,10 +65,7 @@ pub struct Word {
 /// efficiently enforce rules against choosing overlapping words. This is generic over the window
 /// size, because we use fixed-length arrays to represent the substrings for performance reasons.
 #[derive(Clone)]
-struct DupeIndex<N: ArrayLength<GlyphId>> {
-    /// The number of sequential characters that have to be shared to count as a dupe.
-    window_size: usize,
-
+struct DupeIndex<const WINDOW_SIZE: usize> {
     /// An array of groups of words that share a given substring.
     groups: Vec<Vec<GlobalWordId>>,
 
@@ -78,14 +73,13 @@ struct DupeIndex<N: ArrayLength<GlyphId>> {
     group_keys_by_word: HashMap<GlobalWordId, Vec<usize>>,
 
     /// For a given substring, the index in `groups` that represents words containing it.
-    group_key_by_substring: HashMap<GenericArray<GlyphId, N>, usize>,
+    group_key_by_substring: HashMap<[GlyphId; WINDOW_SIZE], usize>,
 }
 
-impl<N: ArrayLength<GlyphId>> Default for DupeIndex<N> {
+impl<const WINDOW_SIZE: usize> Default for DupeIndex<WINDOW_SIZE> {
     /// Build an empty `DupeIndex`.
     fn default() -> Self {
         DupeIndex {
-            window_size: <N as Unsigned>::to_usize(),
             groups: vec![],
             group_keys_by_word: HashMap::new(),
             group_key_by_substring: HashMap::new(),
@@ -100,21 +94,21 @@ pub trait AnyDupeIndex {
     fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
 }
 
-impl<N: ArrayLength<GlyphId>> AnyDupeIndex for DupeIndex<N> {
+impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
     /// Accessor for the index's window size (the number of sequential characters that have to be
     /// shared to count as a dupe).
     fn window_size(&self) -> usize {
-        self.window_size
+        WINDOW_SIZE
     }
 
     /// Record a word in the index, adding it to the groups representing each of its
-    /// `window_size`-length substrings.
+    /// `WINDOW_SIZE`-length substrings.
     fn add_word(&mut self, word_id: WordId, word: &Word) {
         let global_word_id = (word.glyphs.len(), word_id);
         let mut group_keys: Vec<usize> = vec![];
 
-        for substring in word.glyphs.windows(self.window_size) {
-            let substring = GenericArray::clone_from_slice(substring);
+        for substring_slice in word.glyphs.windows(WINDOW_SIZE) {
+            let substring: [GlyphId; WINDOW_SIZE] = substring_slice.try_into().unwrap();
             let existing_group_key = self.group_key_by_substring.get(&substring);
 
             if let Some(&existing_group_key) = existing_group_key {
@@ -420,14 +414,14 @@ impl WordList {
         // The type param is one higher than `max_shared_substring` because it's smallest forbidden
         // overlap, not max shared substring.
         match max_shared_substring {
-            Some(3) => Some(Box::new(DupeIndex::<U4>::default())),
-            Some(4) => Some(Box::new(DupeIndex::<U5>::default())),
-            Some(5) => Some(Box::new(DupeIndex::<U6>::default())),
-            Some(6) => Some(Box::new(DupeIndex::<U7>::default())),
-            Some(7) => Some(Box::new(DupeIndex::<U8>::default())),
-            Some(8) => Some(Box::new(DupeIndex::<U9>::default())),
-            Some(9) => Some(Box::new(DupeIndex::<U10>::default())),
-            Some(10) => Some(Box::new(DupeIndex::<U11>::default())),
+            Some(3) => Some(Box::new(DupeIndex::<4>::default())),
+            Some(4) => Some(Box::new(DupeIndex::<5>::default())),
+            Some(5) => Some(Box::new(DupeIndex::<6>::default())),
+            Some(6) => Some(Box::new(DupeIndex::<7>::default())),
+            Some(7) => Some(Box::new(DupeIndex::<8>::default())),
+            Some(8) => Some(Box::new(DupeIndex::<9>::default())),
+            Some(9) => Some(Box::new(DupeIndex::<10>::default())),
+            Some(10) => Some(Box::new(DupeIndex::<11>::default())),
             _ => None,
         }
     }
