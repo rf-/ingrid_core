@@ -205,7 +205,7 @@ pub fn sort_slot_options(
 }
 
 /// An across or down entry in the input to `generate_grid_config` or `generate_slot_config`.
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct SlotSpec {
     pub start_cell: GridCoord,
     pub direction: Direction,
