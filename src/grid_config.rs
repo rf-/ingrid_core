@@ -7,8 +7,6 @@ use std::fmt::Debug;
 use std::sync::mpsc;
 
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "serde")]
 use serde_derive::{Deserialize, Serialize};
 
 use crate::util::build_glyph_counts_by_cell;
