@@ -206,19 +206,19 @@ pub fn sort_slot_options(
 
 /// An across or down entry in the input to `generate_grid_config` or `generate_slot_config`.
 #[derive(Debug, Clone)]
-pub struct GridEntry {
-    pub loc: GridCoord,
-    pub len: usize,
-    pub dir: Direction,
+pub struct SlotSpec {
+    pub start_cell: GridCoord,
+    pub direction: Direction,
+    pub length: usize,
 }
 
-impl GridEntry {
+impl SlotSpec {
     /// Generate the coords for each cell of this entry.
     fn cell_coords(&self) -> Vec<GridCoord> {
-        (0..self.len)
-            .map(|cell_idx| match self.dir {
-                Direction::Across => (self.loc.0 + cell_idx, self.loc.1),
-                Direction::Down => (self.loc.0, self.loc.1 + cell_idx),
+        (0..self.length)
+            .map(|cell_idx| match self.direction {
+                Direction::Across => (self.start_cell.0 + cell_idx, self.start_cell.1),
+                Direction::Down => (self.start_cell.0, self.start_cell.1 + cell_idx),
             })
             .collect()
     }
@@ -228,7 +228,7 @@ impl GridEntry {
 /// `SlotConfig`s containing derived information about crossings, etc.
 #[must_use]
 pub fn generate_slot_configs(
-    entries: &[GridEntry],
+    entries: &[SlotSpec],
 ) -> (SmallVec<[SlotConfig; MAX_SLOT_COUNT]>, usize) {
     #[derive(Debug)]
     struct GridCell {
@@ -315,9 +315,9 @@ pub fn generate_slot_configs(
 
         slot_configs.push(SlotConfig {
             id: entry_idx,
-            start_cell: entry.loc,
-            direction: entry.dir,
-            length: entry.len,
+            start_cell: entry.start_cell,
+            direction: entry.direction,
+            length: entry.length,
             crossings,
         });
     }
@@ -398,7 +398,7 @@ pub fn generate_slot_options(
 #[must_use]
 pub fn generate_grid_config<'a>(
     mut word_list: WordList,
-    entries: &'a [GridEntry],
+    entries: &'a [SlotSpec],
     raw_fill: &'a [Option<String>],
     width: usize,
     height: usize,
@@ -432,15 +432,11 @@ pub fn generate_grid_config<'a>(
     }
 }
 
-/// Generate a grid config from a string template, with . representing empty cells, # representing
+/// Generate a list of `SlotSpec`s from a template string with . representing empty cells, # representing
 /// blocks, and letters representing themselves.
 #[allow(dead_code)]
 #[must_use]
-pub fn generate_grid_config_from_template_string(
-    word_list: WordList,
-    template: &str,
-    min_score: f32,
-) -> OwnedGridConfig {
+pub fn generate_slots_from_template_string(template: &str) -> Vec<SlotSpec> {
     fn build_words(template: &[Vec<char>]) -> Vec<Vec<GridCoord>> {
         let mut result: Vec<Vec<GridCoord>> = vec![];
 
@@ -478,13 +474,13 @@ pub fn generate_grid_config_from_template_string(
         })
         .collect();
 
-    let mut entries: Vec<GridEntry> = vec![];
+    let mut slot_specs: Vec<SlotSpec> = vec![];
 
     for coords in build_words(&template) {
-        entries.push(GridEntry {
-            loc: coords[0],
-            len: coords.len(),
-            dir: Direction::Across,
+        slot_specs.push(SlotSpec {
+            start_cell: coords[0],
+            length: coords.len(),
+            direction: Direction::Across,
         });
     }
 
@@ -494,29 +490,58 @@ pub fn generate_grid_config_from_template_string(
 
     for coords in build_words(&transposed_template) {
         let coords: Vec<GridCoord> = coords.iter().copied().map(|(y, x)| (x, y)).collect();
-        entries.push(GridEntry {
-            loc: coords[0],
-            len: coords.len(),
-            dir: Direction::Down,
+        slot_specs.push(SlotSpec {
+            start_cell: coords[0],
+            length: coords.len(),
+            direction: Direction::Down,
         });
     }
 
+    slot_specs
+}
+
+/// Generate an `OwnedGridConfig` from a template string with . representing empty cells, # representing
+/// blocks, and letters representing themselves.
+#[allow(dead_code)]
+#[must_use]
+pub fn generate_grid_config_from_template_string(
+    word_list: WordList,
+    template: &str,
+    min_score: f32,
+) -> OwnedGridConfig {
+    let slot_specs = generate_slots_from_template_string(template);
+
+    let fill: Vec<Vec<Option<String>>> = template
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                None
+            } else {
+                Some(
+                    line.chars()
+                        .map(|c| {
+                            if c == '.' || c == '#' {
+                                None
+                            } else {
+                                Some(c.to_lowercase().to_string())
+                            }
+                        })
+                        .collect(),
+                )
+            }
+        })
+        .collect();
+
+    let width = fill[0].len();
+    let height = fill.len();
+
     generate_grid_config(
         word_list,
-        &entries,
-        &template
-            .iter()
-            .flatten()
-            .map(|&c| {
-                if c == '.' || c == '#' {
-                    None
-                } else {
-                    Some(c.to_lowercase().to_string())
-                }
-            })
-            .collect::<Vec<_>>(),
-        template[0].len(),
-        template.len(),
+        &slot_specs,
+        &fill.into_iter().flatten().collect::<Vec<_>>(),
+        width,
+        height,
         min_score,
     )
 }
