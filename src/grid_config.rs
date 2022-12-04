@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::mpsc;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "serde")]
+use serde_derive::{Deserialize, Serialize};
+
 use crate::util::build_glyph_counts_by_cell;
 use crate::word_list::{GlyphId, RawWordListEntry, WordId, WordList};
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
@@ -23,6 +28,8 @@ pub type GridCoord = (usize, usize);
 
 /// The direction that a slot is facing.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 #[allow(dead_code)]
 pub enum Direction {
     Across,
@@ -206,6 +213,8 @@ pub fn sort_slot_options(
 
 /// An across or down entry in the input to `generate_grid_config` or `generate_slot_config`.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SlotSpec {
     pub start_cell: GridCoord,
     pub direction: Direction,
