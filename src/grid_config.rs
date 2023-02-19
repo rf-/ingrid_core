@@ -9,6 +9,9 @@ use std::sync::mpsc;
 #[cfg(feature = "serde")]
 use serde_derive::{Deserialize, Serialize};
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::util::build_glyph_counts_by_cell;
 use crate::word_list::{GlyphId, RawWordListEntry, WordId, WordList};
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
@@ -91,6 +94,22 @@ impl SlotConfig {
         grid_width: usize,
     ) -> Option<Vec<GlyphId>> {
         self.fill(fill, grid_width).into_iter().collect()
+    }
+
+    /// Generate a `SlotSpec` identifying this slot.
+    #[must_use]
+    pub fn slot_spec(&self) -> SlotSpec {
+        SlotSpec {
+            start_cell: self.start_cell,
+            direction: self.direction,
+            length: self.length,
+        }
+    }
+
+    /// Generate a string key identifying this slot.
+    #[must_use]
+    pub fn slot_key(&self) -> String {
+        self.slot_spec().to_key()
     }
 }
 
@@ -209,10 +228,8 @@ pub fn sort_slot_options(
     }
 }
 
-/// An across or down entry in the input to `generate_grid_config` or `generate_slot_config`.
+/// A struct identifying a specific slot in the grid.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct SlotSpec {
     pub start_cell: GridCoord,
     pub direction: Direction,
@@ -220,14 +237,86 @@ pub struct SlotSpec {
 }
 
 impl SlotSpec {
+    /// Parse a string like "1,2,down,5" into a `SlotSpec` struct.
+    pub fn from_key(key: &str) -> Result<SlotSpec, String> {
+        let key_parts: Vec<&str> = key.split(',').collect();
+        if key_parts.len() != 4 {
+            return Err(format!("invalid slot key: {}", key));
+        }
+
+        let x: Result<usize, _> = key_parts[0].parse();
+        let y: Result<usize, _> = key_parts[1].parse();
+        let direction: Option<Direction> = match key_parts[2] {
+            "across" => Some(Direction::Across),
+            "down" => Some(Direction::Down),
+            _ => None,
+        };
+        let length: Result<usize, _> = key_parts[3].parse();
+
+        if let (Ok(x), Ok(y), Some(direction), Ok(length)) = (x, y, direction, length) {
+            Ok(SlotSpec {
+                start_cell: (x, y),
+                direction,
+                length,
+            })
+        } else {
+            Err(format!("invalid slot key: {:?}", key))
+        }
+    }
+
+    /// Represent this slot as a string like "1,2,down,5".
+    #[must_use]
+    pub fn to_key(&self) -> String {
+        let direction = match self.direction {
+            Direction::Across => "across",
+            Direction::Down => "down",
+        };
+        format!(
+            "{},{},{},{}",
+            self.start_cell.0, self.start_cell.1, direction, self.length,
+        )
+    }
+
+    /// Does this spec match the given slot config?
+    #[must_use]
+    pub fn matches_slot(&self, slot: &SlotConfig) -> bool {
+        self.start_cell == slot.start_cell
+            && self.direction == slot.direction
+            && self.length == slot.length
+    }
+
     /// Generate the coords for each cell of this entry.
-    fn cell_coords(&self) -> Vec<GridCoord> {
+    #[must_use]
+    pub fn cell_coords(&self) -> Vec<GridCoord> {
         (0..self.length)
             .map(|cell_idx| match self.direction {
                 Direction::Across => (self.start_cell.0 + cell_idx, self.start_cell.1),
                 Direction::Down => (self.start_cell.0, self.start_cell.1 + cell_idx),
             })
             .collect()
+    }
+}
+
+/// Serialize a `SlotSpec` into a string key.
+#[cfg(feature = "serde")]
+impl Serialize for SlotSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_key())
+    }
+}
+
+/// Deserialize a `SlotSpec` from a string key.
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for SlotSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw_string = String::deserialize(deserializer)?;
+        SlotSpec::from_key(&raw_string).map_err(serde::de::Error::custom)
     }
 }
 
@@ -609,4 +698,36 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
     }
 
     grid.join("\n")
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use crate::grid_config::{Direction, SlotSpec};
+
+    #[test]
+    fn test_slot_spec_serialization() {
+        let slot_spec = SlotSpec {
+            start_cell: (1, 2),
+            direction: Direction::Across,
+            length: 5,
+        };
+
+        let slot_key = serde_json::to_string(&slot_spec).unwrap();
+
+        assert_eq!(slot_key, "\"1,2,across,5\"");
+    }
+
+    #[test]
+    fn test_slot_spec_deserialization() {
+        let slot_spec: SlotSpec = serde_json::from_str("\"3,4,down,12\"").unwrap();
+
+        assert_eq!(
+            slot_spec,
+            SlotSpec {
+                start_cell: (3, 4),
+                direction: Direction::Down,
+                length: 12,
+            }
+        );
+    }
 }
