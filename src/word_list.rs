@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::{fmt, fs};
 
@@ -424,6 +424,19 @@ impl WordList {
             Some(10) => Some(Box::new(DupeIndex::<11>::default())),
             _ => None,
         }
+    }
+}
+
+impl Debug for WordList {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WordList")
+            .field("glyphs", &self.glyphs)
+            .field(
+                "words",
+                &self.words.iter().map(Vec::len).collect::<Vec<_>>(),
+            )
+            .field("max_length", &self.max_length)
+            .finish()
     }
 }
 
