@@ -4,7 +4,8 @@
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::mpsc;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[cfg(feature = "serde")]
 use serde_derive::{Deserialize, Serialize};
@@ -132,15 +133,15 @@ pub struct GridConfig<'a> {
     /// and the existing letters filled into the grid.
     pub slot_options: &'a [Vec<WordId>],
 
-    /// An optional channel that can be used to signal that the fill operation should be canceled.
-    pub abort_rx: &'a Option<mpsc::Receiver<()>>,
-
     /// The width and height of the grid.
     pub width: usize,
     pub height: usize,
 
     /// The number of distinct crossings represented in all of the `slot_configs`.
     pub crossing_count: usize,
+
+    /// An optional atomic flag that can be set to signal that the fill operation should be canceled.
+    pub abort: Option<&'a AtomicBool>,
 }
 
 /// A struct that owns a copy of each piece of information needed by `GridConfig`.
@@ -149,10 +150,10 @@ pub struct OwnedGridConfig {
     pub fill: Vec<Option<GlyphId>>,
     pub slot_configs: SmallVec<[SlotConfig; MAX_SLOT_COUNT]>,
     pub slot_options: SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]>,
-    pub abort_rx: Option<mpsc::Receiver<()>>,
     pub width: usize,
     pub height: usize,
     pub crossing_count: usize,
+    pub abort: Option<Arc<AtomicBool>>,
 }
 
 impl OwnedGridConfig {
@@ -164,10 +165,10 @@ impl OwnedGridConfig {
             fill: &self.fill,
             slot_configs: &self.slot_configs,
             slot_options: &self.slot_options,
-            abort_rx: &self.abort_rx,
             width: self.width,
             height: self.height,
             crossing_count: self.crossing_count,
+            abort: self.abort.as_deref(),
         }
     }
 }
@@ -525,7 +526,7 @@ pub fn generate_grid_config<'a>(
         width,
         height,
         crossing_count,
-        abort_rx: None,
+        abort: None,
     }
 }
 

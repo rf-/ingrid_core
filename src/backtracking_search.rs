@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::arc_consistency::{
@@ -25,8 +26,7 @@ use crate::{CHECK_INVARIANTS, MAX_SLOT_COUNT};
 /// slot, we should stick with the previous one instead of switching (per Balafoutis).
 pub const ADAPTIVE_BRANCHING_THRESHOLD: f32 = 0.15;
 
-/// How many times should we loop before checking whether we've passed our deadline or received
-/// a message on our abort channel?
+/// How many times should we loop before checking whether we've passed our deadline?
 pub const INTERRUPT_FREQUENCY: usize = 10;
 
 /// How much do we decrease the weight of each crossing every time we wipe out a domain?
@@ -520,10 +520,10 @@ pub fn find_fill_for_seed(
                     return Err(FillFailure::Timeout);
                 }
             }
-            if let Some(abort_rx) = config.abort_rx {
-                if abort_rx.try_recv().is_ok() {
-                    return Err(FillFailure::Abort);
-                }
+        }
+        if let Some(abort) = config.abort {
+            if abort.load(Ordering::Relaxed) {
+                return Err(FillFailure::Abort);
             }
         }
 
@@ -763,22 +763,35 @@ pub fn find_fill(
 
 #[cfg(test)]
 mod tests {
-    use crate::backtracking_search::find_fill;
+    use crate::backtracking_search::{find_fill, FillFailure};
     use crate::grid_config::{
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
     use crate::word_list::tests::dictionary_path;
     use crate::word_list::WordList;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn load_word_list(max_length: usize) -> WordList {
         WordList::from_dict_file(&dictionary_path(), Some(max_length), Some(5)).unwrap()
     }
 
-    fn generate_config(template: &str) -> OwnedGridConfig {
+    fn generate_config_with_min_score(template: &str, min_score: f32) -> OwnedGridConfig {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        generate_grid_config_from_template_string(load_word_list(width.max(height)), template, 40.0)
+        let mut config = generate_grid_config_from_template_string(
+            load_word_list(width.max(height)),
+            template,
+            min_score,
+        );
+        config.abort = Some(Arc::new(AtomicBool::new(false)));
+        config
+    }
+
+    fn generate_config(template: &str) -> OwnedGridConfig {
+        generate_config_with_min_score(template, 40.0)
     }
 
     #[test]
@@ -1047,5 +1060,43 @@ mod tests {
             "{}",
             render_grid(&grid_config.to_config_ref(), &result.choices)
         );
+    }
+
+    #[test]
+    fn test_abort_fill_attempt() {
+        let grid_config = generate_config_with_min_score(
+            "
+            .......##......
+            admirers#......
+            .......t.......
+            .....#.i...#...
+            ....#..c..#....
+            ...#...k.#.....
+            ###....y......#
+            ##.....f.....##
+            #......i....###
+            .....#.n...#...
+            ....#..g..#....
+            ...#...e.#.....
+            .......r.......
+            ......#s.......
+            ......##.......
+            ",
+            50.0,
+        );
+
+        let abort = grid_config.abort.clone().unwrap();
+        let start = Instant::now();
+
+        let thread = std::thread::spawn(move || find_fill(&grid_config.to_config_ref(), None));
+
+        std::thread::sleep(Duration::from_secs(1));
+        abort.store(true, Ordering::Relaxed);
+
+        let result = thread.join().unwrap().unwrap_err();
+        let time = start.elapsed();
+
+        assert!(matches!(result, FillFailure::Abort));
+        println!("Aborted in {time:?}");
     }
 }
