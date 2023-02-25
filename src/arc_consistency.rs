@@ -308,10 +308,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 });
 
             // If there are no queued slots left, we're done with this AC pass.
-            // TODO: Use let-else here once IntelliJ's dead-code analysis stops breaking on it.
-            let slot_id = if let Some(slot_id) = slot_id {
-                slot_id
-            } else {
+            let Some(slot_id) = slot_id else {
                 break;
             };
 

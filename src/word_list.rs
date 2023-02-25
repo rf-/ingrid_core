@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::path::Path;
 use std::{fmt, fs};
 
@@ -191,18 +191,18 @@ pub enum WordListError {
 impl fmt::Display for WordListError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let string = match self {
-            WordListError::InvalidPath(path) => format!("Can't read path: {}", path),
+            WordListError::InvalidPath(path) => format!("Can't read path: {path}"),
             WordListError::InvalidLine(line) => {
-                format!("Word list contains invalid line: '{}'", line)
+                format!("Word list contains invalid line: '{line}'")
             }
             WordListError::InvalidWord(word) => {
-                format!("Word list contains invalid word: '{}'", word)
+                format!("Word list contains invalid word: '{word}'")
             }
             WordListError::InvalidScore(score) => {
-                format!("Word list contains invalid score: '{}'", score)
+                format!("Word list contains invalid score: '{score}'")
             }
         };
-        write!(f, "{}", string)
+        write!(f, "{string}")
     }
 }
 
@@ -414,21 +414,21 @@ impl WordList {
         // The type param is one higher than `max_shared_substring` because it's smallest forbidden
         // overlap, not max shared substring.
         match max_shared_substring {
-            Some(3) => Some(Box::new(DupeIndex::<4>::default())),
-            Some(4) => Some(Box::new(DupeIndex::<5>::default())),
-            Some(5) => Some(Box::new(DupeIndex::<6>::default())),
-            Some(6) => Some(Box::new(DupeIndex::<7>::default())),
-            Some(7) => Some(Box::new(DupeIndex::<8>::default())),
-            Some(8) => Some(Box::new(DupeIndex::<9>::default())),
-            Some(9) => Some(Box::new(DupeIndex::<10>::default())),
-            Some(10) => Some(Box::new(DupeIndex::<11>::default())),
+            Some(3) => Some(Box::<DupeIndex<4>>::default()),
+            Some(4) => Some(Box::<DupeIndex<5>>::default()),
+            Some(5) => Some(Box::<DupeIndex<6>>::default()),
+            Some(6) => Some(Box::<DupeIndex<7>>::default()),
+            Some(7) => Some(Box::<DupeIndex<8>>::default()),
+            Some(8) => Some(Box::<DupeIndex<9>>::default()),
+            Some(9) => Some(Box::<DupeIndex<10>>::default()),
+            Some(10) => Some(Box::<DupeIndex<11>>::default()),
             _ => None,
         }
     }
 }
 
 impl Debug for WordList {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WordList")
             .field("glyphs", &self.glyphs)
             .field(
@@ -460,7 +460,7 @@ pub mod tests {
     #[allow(clippy::bool_assert_comparison)]
     #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
-        let word_list = WordList::from_dict_file(&dictionary_path(), Some(5), None).unwrap();
+        let word_list = WordList::from_dict_file(dictionary_path(), Some(5), None).unwrap();
 
         assert_eq!(word_list.max_length, 5);
         assert_eq!(word_list.words.len(), 6);

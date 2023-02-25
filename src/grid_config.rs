@@ -157,6 +157,7 @@ pub struct OwnedGridConfig {
 
 impl OwnedGridConfig {
     #[allow(dead_code)]
+    #[must_use]
     pub fn to_config_ref(&self) -> GridConfig {
         GridConfig {
             word_list: &self.word_list,
@@ -241,7 +242,7 @@ impl SlotSpec {
     pub fn from_key(key: &str) -> Result<SlotSpec, String> {
         let key_parts: Vec<&str> = key.split(',').collect();
         if key_parts.len() != 4 {
-            return Err(format!("invalid slot key: {}", key));
+            return Err(format!("invalid slot key: {key}"));
         }
 
         let x: Result<usize, _> = key_parts[0].parse();
@@ -260,7 +261,7 @@ impl SlotSpec {
                 length,
             })
         } else {
-            Err(format!("invalid slot key: {:?}", key))
+            Err(format!("invalid slot key: {key:?}"))
         }
     }
 
