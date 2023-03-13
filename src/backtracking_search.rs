@@ -768,7 +768,8 @@ mod tests {
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
     use crate::word_list::tests::dictionary_path;
-    use crate::word_list::WordList;
+    use crate::word_list::{GlobalWordId, WordList};
+    use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -1098,5 +1099,75 @@ mod tests {
 
         assert!(matches!(result, FillFailure::Abort));
         println!("Aborted in {time:?}");
+    }
+
+    #[test]
+    fn test_add_extra_dupe_rules() {
+        let mut grid_config = generate_config(
+            "
+            #..s###
+            #..i.##
+            ...m...
+            .......
+            .......
+            ##....#
+            ###...#
+            ",
+        );
+
+        let result_1 =
+            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+
+        // Obviously we'll have to rewrite this test if the algorithm changes in
+        // a way that affects the output, but w/e.
+        assert_eq!(
+            render_grid(&grid_config.to_config_ref(), &result_1.choices),
+            indoc! {"
+            .ass...
+            .rail..
+            crimean
+            yalitza
+            dyelots
+            ..dafe.
+            ...rfc.
+            "}
+            .trim()
+        );
+
+        let get_id = |word_list: &WordList, word_str: &str| -> GlobalWordId {
+            (
+                word_str.len(),
+                *word_list.word_id_by_string.get(word_str.into()).unwrap(),
+            )
+        };
+
+        let crimean_id = get_id(&grid_config.word_list, "crimean");
+        let ass_id = get_id(&grid_config.word_list, "ass");
+
+        println!("{crimean_id:?}, {ass_id:?}");
+
+        grid_config
+            .word_list
+            .dupe_index
+            .as_mut()
+            .unwrap()
+            .add_dupe_pair(crimean_id, ass_id);
+
+        let result_2 =
+            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+
+        assert_eq!(
+            render_grid(&grid_config.to_config_ref(), &result_2.choices),
+            indoc! {"
+            .ass...
+            .rail..
+            animate
+            politer
+            useless
+            ..dans.
+            ...rsa.
+            "}
+            .trim()
+        );
     }
 }

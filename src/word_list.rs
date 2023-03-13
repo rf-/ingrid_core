@@ -65,15 +65,18 @@ pub struct Word {
 /// efficiently enforce rules against choosing overlapping words. This is generic over the window
 /// size, because we use fixed-length arrays to represent the substrings for performance reasons.
 #[derive(Clone)]
-struct DupeIndex<const WINDOW_SIZE: usize> {
+pub struct DupeIndex<const WINDOW_SIZE: usize> {
     /// An array of groups of words that share a given substring.
-    groups: Vec<Vec<GlobalWordId>>,
+    pub groups: Vec<Vec<GlobalWordId>>,
+
+    /// A map of extra pairwise dupe relationships that aren't based on substrings.
+    pub extra_dupes_by_word: HashMap<GlobalWordId, Vec<GlobalWordId>>,
 
     /// For a given word, an array of group ids (indices of `groups`) that it belongs to.
-    group_keys_by_word: HashMap<GlobalWordId, Vec<usize>>,
+    pub group_keys_by_word: HashMap<GlobalWordId, Vec<usize>>,
 
     /// For a given substring, the index in `groups` that represents words containing it.
-    group_key_by_substring: HashMap<[GlyphId; WINDOW_SIZE], usize>,
+    pub group_key_by_substring: HashMap<[GlyphId; WINDOW_SIZE], usize>,
 }
 
 impl<const WINDOW_SIZE: usize> Default for DupeIndex<WINDOW_SIZE> {
@@ -81,6 +84,7 @@ impl<const WINDOW_SIZE: usize> Default for DupeIndex<WINDOW_SIZE> {
     fn default() -> Self {
         DupeIndex {
             groups: vec![],
+            extra_dupes_by_word: HashMap::new(),
             group_keys_by_word: HashMap::new(),
             group_key_by_substring: HashMap::new(),
         }
@@ -91,7 +95,12 @@ impl<const WINDOW_SIZE: usize> Default for DupeIndex<WINDOW_SIZE> {
 pub trait AnyDupeIndex {
     fn window_size(&self) -> usize;
     fn add_word(&mut self, word_id: WordId, word: &Word);
-    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
+    fn add_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
+    fn remove_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
+    fn get_dupes_by_length(
+        &self,
+        global_word_id: GlobalWordId,
+    ) -> Option<HashMap<usize, HashSet<WordId>>>;
 }
 
 impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
@@ -125,11 +134,48 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         self.group_keys_by_word.insert(global_word_id, group_keys);
     }
 
+    /// Record that two arbitrary words should be considered duplicates of each other.
+    fn add_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId) {
+        for (from_id, to_id) in [
+            (global_word_id_1, global_word_id_2),
+            (global_word_id_2, global_word_id_1),
+        ] {
+            if let Some(existing_group) = self.extra_dupes_by_word.get_mut(&from_id) {
+                if !existing_group.contains(&to_id) {
+                    existing_group.push(to_id);
+                }
+            } else {
+                self.extra_dupes_by_word.insert(from_id, vec![to_id]);
+            }
+        }
+    }
+
+    /// Remove a word pair from the extra dupes index (note that they will still be considered dupes if they have a long enough overlapping substring, etc.).
+    fn remove_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId) {
+        for (from_id, to_id) in [
+            (global_word_id_1, global_word_id_2),
+            (global_word_id_2, global_word_id_1),
+        ] {
+            if let Some(existing_group) = self.extra_dupes_by_word.get_mut(&from_id) {
+                existing_group.retain(|id| *id != to_id);
+            }
+        }
+    }
+
     /// For a given word, get a map containing all words that duplicate it, indexed by their length.
-    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>> {
+    fn get_dupes_by_length(
+        &self,
+        global_word_id: GlobalWordId,
+    ) -> Option<HashMap<usize, HashSet<WordId>>> {
+        let group_ids = self.group_keys_by_word.get(&global_word_id);
+        let extra_dupes = self.extra_dupes_by_word.get(&global_word_id);
+        if group_ids.is_none() && extra_dupes.is_none() {
+            return None;
+        }
+
         let mut dupes_by_length: HashMap<usize, HashSet<WordId>> = HashMap::new();
 
-        if let Some(group_ids) = self.group_keys_by_word.get(&global_word_id) {
+        if let Some(group_ids) = group_ids {
             for &group_id in group_ids {
                 for &(length, word) in &self.groups[group_id] {
                     dupes_by_length
@@ -140,9 +186,20 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
             }
         }
 
-        dupes_by_length
+        if let Some(extra_dupes) = extra_dupes {
+            for &(length, word) in extra_dupes.iter() {
+                dupes_by_length
+                    .entry(length)
+                    .or_insert_with(HashSet::new)
+                    .insert(word);
+            }
+        }
+
+        Some(dupes_by_length)
     }
 }
+
+type BoxedDupeIndex = Box<dyn AnyDupeIndex + Send + Sync>;
 
 /// A struct representing the currently-loaded word list(s). This contains information that is
 /// static regardless of grid geometry or our progress through a fill (although we do configure a
@@ -166,7 +223,7 @@ pub struct WordList {
     pub word_id_by_string: HashMap<String, WordId>,
 
     /// A dupe index reflecting the max substring length provided when configuring the WordList.
-    pub dupe_index: Option<Box<dyn AnyDupeIndex + Send + Sync>>,
+    pub dupe_index: Option<BoxedDupeIndex>,
 
     /// The maximum word length provided when configuring the WordList.
     pub max_length: usize,
@@ -320,6 +377,7 @@ impl WordList {
 
         self.word_id_by_string
             .insert(raw_entry.normalized.clone(), word_id);
+
         if let Some(dupe_index) = &mut self.dupe_index {
             dupe_index.add_word(word_id, &self.words[word_length][word_id]);
         }
@@ -390,16 +448,11 @@ impl WordList {
     }
 
     /// Update the `max_shared_substring` config by regenerating the dupe index.
-    #[allow(dead_code)]
     pub fn update_max_shared_substring(&mut self, max_shared_substring: Option<usize>) {
         let mut new_dupe_index = WordList::instantiate_dupe_index(max_shared_substring);
 
         if let Some(new_dupe_index) = &mut new_dupe_index {
-            for bucket in &self.words {
-                for (word_id, word) in bucket.iter().enumerate() {
-                    new_dupe_index.add_word(word_id, word);
-                }
-            }
+            self.populate_dupe_index(new_dupe_index);
         }
 
         self.dupe_index = new_dupe_index;
@@ -408,9 +461,8 @@ impl WordList {
     /// Generate a `DupeIndex` with the appropriate window size for the given `max_shared_substring`
     /// setting. This is ugly because we want to be able to use raw arrays in the implementation of
     /// `DupeIndex`, so their lengths need to be known at compile time.
-    fn instantiate_dupe_index(
-        max_shared_substring: Option<usize>,
-    ) -> Option<Box<dyn AnyDupeIndex + Send + Sync>> {
+    #[must_use]
+    pub fn instantiate_dupe_index(max_shared_substring: Option<usize>) -> Option<BoxedDupeIndex> {
         // The type param is one higher than `max_shared_substring` because it's smallest forbidden
         // overlap, not max shared substring.
         match max_shared_substring {
@@ -423,6 +475,14 @@ impl WordList {
             Some(9) => Some(Box::<DupeIndex<10>>::default()),
             Some(10) => Some(Box::<DupeIndex<11>>::default()),
             _ => None,
+        }
+    }
+
+    fn populate_dupe_index(&self, index: &mut BoxedDupeIndex) {
+        for bucket in &self.words {
+            for (word_id, word) in bucket.iter().enumerate() {
+                index.add_word(word_id, word);
+            }
         }
     }
 }
@@ -442,7 +502,7 @@ impl Debug for WordList {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::word_list::WordList;
+    use crate::word_list::{BoxedDupeIndex, DupeIndex, GlobalWordId, RawWordListEntry, WordList};
     use std::path;
     use std::path::PathBuf;
 
@@ -477,5 +537,82 @@ pub mod tests {
         assert_eq!(word.hidden, false);
 
         assert!(matches!(word_list.word_id_by_string.get("skates"), None));
+    }
+
+    #[test]
+    fn test_soft_dupe_index() {
+        let mut word_list = WordList::new(&[], Some(6), Some(5));
+        let mut soft_dupe_index: BoxedDupeIndex = Box::new(DupeIndex::<4>::default());
+
+        let (golf_id, golf_word) = word_list.add_word(
+            &RawWordListEntry {
+                normalized: "golf".into(),
+                canonical: "golf".into(),
+                score: 0,
+            },
+            false,
+        );
+        soft_dupe_index.add_word(golf_id, golf_word);
+
+        let (golfy_id, golfy_word) = word_list.add_word(
+            &RawWordListEntry {
+                normalized: "golfy".into(),
+                canonical: "golfy".into(),
+                score: 0,
+            },
+            false,
+        );
+        soft_dupe_index.add_word(golfy_id, golfy_word);
+
+        let (golves_id, golves_word) = word_list.add_word(
+            &RawWordListEntry {
+                normalized: "golves".into(),
+                canonical: "golves".into(),
+                score: 0,
+            },
+            false,
+        );
+        soft_dupe_index.add_word(golves_id, golves_word);
+
+        let is_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+            index
+                .get_dupes_by_length(id_1)
+                .and_then(|dupes_by_length| dupes_by_length.get(&id_2.0).cloned())
+                .map_or(false, |dupes| dupes.contains(&id_2.1))
+        };
+
+        let assert_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+            assert!(is_dupe(index, id_1, id_2));
+            assert!(is_dupe(index, id_2, id_1));
+        };
+
+        let assert_not_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+            assert!(!is_dupe(index, id_1, id_2));
+            assert!(!is_dupe(index, id_2, id_1));
+        };
+
+        let main_index = &word_list.dupe_index.unwrap();
+
+        // Regular index doesn't see any of these as dupes
+        assert_not_dupe(main_index, (4, golf_id), (5, golfy_id));
+        assert_not_dupe(main_index, (4, golf_id), (6, golves_id));
+        assert_not_dupe(main_index, (5, golfy_id), (6, golves_id));
+
+        // Secondary index sees golf/golfy as dupes but not golf/golves
+        assert_dupe(&soft_dupe_index, (4, golf_id), (5, golfy_id));
+        assert_not_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
+        assert_not_dupe(&soft_dupe_index, (5, golfy_id), (6, golves_id));
+
+        // Add custom pair
+        soft_dupe_index.add_dupe_pair((4, golf_id), (6, golves_id));
+
+        // After customization, golf/golves is a dupe
+        assert_dupe(&soft_dupe_index, (4, golf_id), (5, golfy_id));
+        assert_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
+        assert_not_dupe(&soft_dupe_index, (5, golfy_id), (6, golves_id));
+
+        // Remove custom pair and check again
+        soft_dupe_index.remove_dupe_pair((4, golf_id), (6, golves_id));
+        assert_not_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
     }
 }
