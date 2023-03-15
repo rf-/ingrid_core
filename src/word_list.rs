@@ -461,7 +461,7 @@ impl WordList {
         let mut new_dupe_index = WordList::instantiate_dupe_index(max_shared_substring);
 
         if let Some(new_dupe_index) = &mut new_dupe_index {
-            self.populate_dupe_index(new_dupe_index);
+            self.populate_dupe_index(new_dupe_index.as_mut());
         }
 
         self.dupe_index = new_dupe_index;
@@ -487,7 +487,7 @@ impl WordList {
         }
     }
 
-    pub fn populate_dupe_index(&self, index: &mut BoxedDupeIndex) {
+    pub fn populate_dupe_index(&self, index: &mut dyn AnyDupeIndex) {
         for bucket in &self.words {
             for (word_id, word) in bucket.iter().enumerate() {
                 index.add_word(word_id, word);
@@ -495,7 +495,7 @@ impl WordList {
         }
     }
 
-    pub fn add_words_to_dupe_index(&self, index: &mut BoxedDupeIndex, words: &[GlobalWordId]) {
+    pub fn add_words_to_dupe_index(&self, index: &mut dyn AnyDupeIndex, words: &[GlobalWordId]) {
         for &(length, word_id) in words {
             index.add_word(word_id, &self.words[length][word_id]);
         }
@@ -517,7 +517,7 @@ impl Debug for WordList {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::word_list::{BoxedDupeIndex, DupeIndex, GlobalWordId, RawWordListEntry, WordList};
+    use crate::word_list::{AnyDupeIndex, DupeIndex, GlobalWordId, RawWordListEntry, WordList};
     use std::path;
     use std::path::PathBuf;
 
@@ -557,7 +557,10 @@ pub mod tests {
     #[test]
     fn test_soft_dupe_index() {
         let mut word_list = WordList::new(&[], Some(6), Some(5));
-        let mut soft_dupe_index: BoxedDupeIndex = Box::new(DupeIndex::<4>::default());
+        let mut soft_dupe_index = DupeIndex::<4>::default();
+
+        // This doesn't do anything except make sure it's OK to call this method unboxed
+        word_list.populate_dupe_index(&mut soft_dupe_index);
 
         let (golf_id, golf_word) = word_list.add_word(
             &RawWordListEntry {
@@ -589,19 +592,19 @@ pub mod tests {
         );
         soft_dupe_index.add_word(golves_id, golves_word);
 
-        let is_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+        let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index
                 .get_dupes_by_length(id_1)
                 .and_then(|dupes_by_length| dupes_by_length.get(&id_2.0).cloned())
                 .map_or(false, |dupes| dupes.contains(&id_2.1))
         };
 
-        let assert_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+        let assert_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             assert!(is_dupe(index, id_1, id_2));
             assert!(is_dupe(index, id_2, id_1));
         };
 
-        let assert_not_dupe = |index: &BoxedDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
+        let assert_not_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             assert!(!is_dupe(index, id_1, id_2));
             assert!(!is_dupe(index, id_2, id_1));
         };
@@ -609,9 +612,9 @@ pub mod tests {
         let main_index = &word_list.dupe_index.unwrap();
 
         // Regular index doesn't see any of these as dupes
-        assert_not_dupe(main_index, (4, golf_id), (5, golfy_id));
-        assert_not_dupe(main_index, (4, golf_id), (6, golves_id));
-        assert_not_dupe(main_index, (5, golfy_id), (6, golves_id));
+        assert_not_dupe(main_index.as_ref(), (4, golf_id), (5, golfy_id));
+        assert_not_dupe(main_index.as_ref(), (4, golf_id), (6, golves_id));
+        assert_not_dupe(main_index.as_ref(), (5, golfy_id), (6, golves_id));
 
         // Secondary index sees golf/golfy as dupes but not golf/golves
         assert_dupe(&soft_dupe_index, (4, golf_id), (5, golfy_id));
