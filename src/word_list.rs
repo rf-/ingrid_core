@@ -487,11 +487,17 @@ impl WordList {
         }
     }
 
-    fn populate_dupe_index(&self, index: &mut BoxedDupeIndex) {
+    pub fn populate_dupe_index(&self, index: &mut BoxedDupeIndex) {
         for bucket in &self.words {
             for (word_id, word) in bucket.iter().enumerate() {
                 index.add_word(word_id, word);
             }
+        }
+    }
+
+    pub fn add_words_to_dupe_index(&self, index: &mut BoxedDupeIndex, words: &[GlobalWordId]) {
+        for &(length, word_id) in words {
+            index.add_word(word_id, &self.words[length][word_id]);
         }
     }
 }
