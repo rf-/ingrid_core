@@ -64,7 +64,7 @@ pub struct Word {
 /// A struct used to track which words in the list share N-letter substrings, so that we can
 /// efficiently enforce rules against choosing overlapping words. This is generic over the window
 /// size, because we use fixed-length arrays to represent the substrings for performance reasons.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct DupeIndex<const WINDOW_SIZE: usize> {
     /// An array of groups of words that share a given substring.
     pub groups: Vec<Vec<GlobalWordId>>,
@@ -346,7 +346,7 @@ impl WordList {
             max_length,
         };
 
-        instance.replace_list(raw_word_list, max_length);
+        instance.replace_list(raw_word_list, max_length, false);
 
         instance
     }
@@ -388,13 +388,19 @@ impl WordList {
     /// Add all of the given words to the list, and hide any non-hidden words that aren't included
     /// in the new list. We don't fully remove them because we want to keep all of the ids stable
     /// and they may still be referenced elsewhere.
+    ///
+    /// We return a tuple of two sets, one of added words and one of removed words. As an
+    /// optimization, we don't populate the added set unless the caller asks us to (since it's
+    /// pointless when we're initializing the list for the first time and everything is new).
     pub fn replace_list(
         &mut self,
         raw_word_list: &[RawWordListEntry],
         max_length: usize,
-    ) -> HashSet<GlobalWordId> {
+        track_added_set: bool,
+    ) -> (HashSet<GlobalWordId>, HashSet<GlobalWordId>) {
         // Start with the assumption that we're removing everything.
         let mut removed_words_map = self.word_id_by_string.clone();
+        let mut added_words_set = HashSet::new();
 
         // If we're expanding our previous max length, make sure the `words` vec has enough entries.
         while self.words.len() < max_length + 1 {
@@ -417,6 +423,9 @@ impl WordList {
                 word.hidden = false;
                 word.canonical_string = raw_entry.canonical.clone();
                 removed_words_map.remove(&raw_entry.normalized);
+            } else if track_added_set {
+                let (added_word_id, _) = self.add_word(raw_entry, false);
+                added_words_set.insert((word_length, added_word_id));
             } else {
                 self.add_word(raw_entry, false);
             }
@@ -432,7 +441,7 @@ impl WordList {
             })
             .collect();
 
-        removed_words_set
+        (added_words_set, removed_words_set)
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
