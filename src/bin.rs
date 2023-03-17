@@ -88,6 +88,10 @@ fn main() -> Result<(), Error> {
         ),
     };
 
+    if word_list.word_id_by_string.len() == 0 {
+        return Err(Error("Wordlist is empty".into()));
+    }
+
     let grid_config = generate_grid_config_from_template_string(
         word_list,
         &raw_grid_content,
