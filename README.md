@@ -32,21 +32,21 @@ $ cat example_grid.txt
 ....#.....#....
 ....#.....#....
 $ ingrid_core example_grid.txt
-arte#estar#pram
-leis#seale#aero
-dancastellaneta
-imgame##yeltsin
-###punkd#agrees
-jamesearlray###
-adfee#beene#cma
-baas#coats#coal
-sms#proms#halle
+bile#seeit#slaw
+room#lasso#pone
+intimateapparel
+garret##whirred
+###amens#easels
+wisterialane###
+aloes#nuevo#tnt
+ssns#betty#ciao
+pas#wipes#pelts
 ###cremebrulees
-issued#deere###
-seabees##tonkin
-beginningandend
-nyet#croak#atta
-sats#eerie#roos
+dealin#deere###
+imgonna##aesops
+goingintodetail
+utne#anise#atta
+pegs#lemur#shay
 ```
 
 You can also use a custom word list (the default is [Spread the
