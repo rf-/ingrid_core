@@ -3,7 +3,7 @@ use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::path::Path;
-use std::{fmt, fs};
+use std::{fmt, fs, mem};
 
 use crate::{MAX_GLYPH_COUNT, MAX_SLOT_LENGTH};
 
@@ -101,6 +101,10 @@ pub trait AnyDupeIndex {
         &self,
         global_word_id: GlobalWordId,
     ) -> Option<HashMap<usize, HashSet<WordId>>>;
+
+    // Allow moving extra dupe pairs in and out to facilitate replacing the word list.
+    fn take_extra_dupes(&mut self) -> HashMap<GlobalWordId, Vec<GlobalWordId>>;
+    fn put_extra_dupes(&mut self, extra_dupes: HashMap<GlobalWordId, Vec<GlobalWordId>>);
 }
 
 impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
@@ -113,6 +117,11 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
     /// Record a word in the index, adding it to the groups representing each of its
     /// `WINDOW_SIZE`-length substrings.
     fn add_word(&mut self, word_id: WordId, word: &Word) {
+        // If `WINDOW_SIZE` is zero, this index only tracks extra dupes, not window-based dupes.
+        if WINDOW_SIZE == 0 {
+            return;
+        }
+
         let global_word_id = (word.glyphs.len(), word_id);
         let mut group_keys: Vec<usize> = vec![];
 
@@ -197,6 +206,14 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
 
         Some(dupes_by_length)
     }
+
+    fn take_extra_dupes(&mut self) -> HashMap<GlobalWordId, Vec<GlobalWordId>> {
+        mem::take(&mut self.extra_dupes_by_word)
+    }
+
+    fn put_extra_dupes(&mut self, extra_dupes: HashMap<GlobalWordId, Vec<GlobalWordId>>) {
+        self.extra_dupes_by_word = extra_dupes;
+    }
 }
 
 type BoxedDupeIndex = Box<dyn AnyDupeIndex + Send + Sync>;
@@ -226,7 +243,7 @@ pub struct WordList {
     pub word_id_by_string: HashMap<String, WordId>,
 
     /// A dupe index reflecting the max substring length provided when configuring the WordList.
-    pub dupe_index: Option<BoxedDupeIndex>,
+    pub dupe_index: BoxedDupeIndex,
 
     /// The maximum word length provided when configuring the WordList.
     pub max_length: usize,
@@ -396,6 +413,11 @@ impl WordList {
         let word_length = raw_entry.normalized.len();
         let word_id = self.words[word_length].len();
 
+        // We can add words above `max_length`, but we need to make sure there are enough buckets.
+        while self.words.len() < word_length + 1 {
+            self.words.push(vec![]);
+        }
+
         let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
             .normalized
             .chars()
@@ -418,9 +440,8 @@ impl WordList {
         self.word_id_by_string
             .insert(raw_entry.normalized.clone(), word_id);
 
-        if let Some(dupe_index) = &mut self.dupe_index {
-            dupe_index.add_word(word_id, &self.words[word_length][word_id]);
-        }
+        self.dupe_index
+            .add_word(word_id, &self.words[word_length][word_id]);
 
         (word_length, word_id)
     }
@@ -511,12 +532,10 @@ impl WordList {
 
     /// Update the `max_shared_substring` config by regenerating the dupe index.
     pub fn update_max_shared_substring(&mut self, max_shared_substring: Option<usize>) {
+        let extra_dupes = self.dupe_index.take_extra_dupes();
         let mut new_dupe_index = WordList::instantiate_dupe_index(max_shared_substring);
-
-        if let Some(new_dupe_index) = &mut new_dupe_index {
-            self.populate_dupe_index(new_dupe_index.as_mut());
-        }
-
+        self.populate_dupe_index(new_dupe_index.as_mut());
+        new_dupe_index.put_extra_dupes(extra_dupes);
         self.dupe_index = new_dupe_index;
     }
 
@@ -524,23 +543,26 @@ impl WordList {
     /// setting. This is ugly because we want to be able to use raw arrays in the implementation of
     /// `DupeIndex`, so their lengths need to be known at compile time.
     #[must_use]
-    pub fn instantiate_dupe_index(max_shared_substring: Option<usize>) -> Option<BoxedDupeIndex> {
+    pub fn instantiate_dupe_index(max_shared_substring: Option<usize>) -> BoxedDupeIndex {
         // The type param is one higher than `max_shared_substring` because it's smallest forbidden
         // overlap, not max shared substring.
         match max_shared_substring {
-            Some(3) => Some(Box::<DupeIndex<4>>::default()),
-            Some(4) => Some(Box::<DupeIndex<5>>::default()),
-            Some(5) => Some(Box::<DupeIndex<6>>::default()),
-            Some(6) => Some(Box::<DupeIndex<7>>::default()),
-            Some(7) => Some(Box::<DupeIndex<8>>::default()),
-            Some(8) => Some(Box::<DupeIndex<9>>::default()),
-            Some(9) => Some(Box::<DupeIndex<10>>::default()),
-            Some(10) => Some(Box::<DupeIndex<11>>::default()),
-            _ => None,
+            Some(3) => Box::<DupeIndex<4>>::default(),
+            Some(4) => Box::<DupeIndex<5>>::default(),
+            Some(5) => Box::<DupeIndex<6>>::default(),
+            Some(6) => Box::<DupeIndex<7>>::default(),
+            Some(7) => Box::<DupeIndex<8>>::default(),
+            Some(8) => Box::<DupeIndex<9>>::default(),
+            Some(9) => Box::<DupeIndex<10>>::default(),
+            Some(10) => Box::<DupeIndex<11>>::default(),
+            _ => Box::<DupeIndex<0>>::default(),
         }
     }
 
     pub fn populate_dupe_index(&self, index: &mut dyn AnyDupeIndex) {
+        if index.window_size() == 0 {
+            return;
+        }
         for bucket in &self.words {
             for (word_id, word) in bucket.iter().enumerate() {
                 index.add_word(word_id, word);
@@ -549,6 +571,9 @@ impl WordList {
     }
 
     pub fn add_words_to_dupe_index(&self, index: &mut dyn AnyDupeIndex, words: &[GlobalWordId]) {
+        if index.window_size() == 0 {
+            return;
+        }
         for &(length, word_id) in words {
             index.add_word(word_id, &self.words[length][word_id]);
         }
@@ -676,7 +701,7 @@ pub mod tests {
             assert!(!is_dupe(index, id_2, id_1), "!is_dupe({id_2:?}, {id_1:?})");
         };
 
-        let main_index = &word_list.dupe_index.unwrap();
+        let main_index = &word_list.dupe_index;
         let mut soft_dupe_index = soft_dupe_index.lock().unwrap();
 
         // Regular index doesn't see any of these as dupes

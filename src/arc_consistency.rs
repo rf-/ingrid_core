@@ -384,8 +384,10 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 .get_single_option(slot_id, &slot_states[slot_id].eliminations)
                 .expect("slot with `needs_singleton_propagation` must have exactly one option");
 
-            // Just eliminate this exact word from other slots, which is sometimes enough.
-            let mut eliminate_simple_dupes = || -> Result<(), ArcConsistencyFailure> {
+            let dupe_index = &config.word_list.dupe_index;
+
+            // For slots that are below the substring limit, simple dupes aren't covered by the index so we need to check for them directly.
+            if slot_config.length < dupe_index.window_size() {
                 for other_slot_id in 0..config.slot_configs.len() {
                     if other_slot_id != slot_id
                         && !fixed_slots[other_slot_id]
@@ -397,43 +399,33 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                         eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
                     }
                 }
-                Ok(())
-            };
+            }
 
-            if let Some(dupe_index) = &config.word_list.dupe_index {
-                // For slots that are below the substring limit, simple dupes aren't covered by the index so we need to check for them directly.
-                if slot_config.length < dupe_index.window_size() {
-                    eliminate_simple_dupes()?;
+            // We also check the index regardless of the length since there may be additional dupe pairs containing short words.
+            let dupes_by_length = dupe_index.get_dupes_by_length((slot_config.length, word_id));
+
+            for other_slot_id in 0..config.slot_configs.len() {
+                if other_slot_id == slot_id || fixed_slots[other_slot_id] {
+                    continue;
                 }
 
-                // We also check the index regardless of the length since there may be additional dupe pairs containing short words.
-                let dupes_by_length = dupe_index.get_dupes_by_length((slot_config.length, word_id));
+                let later_slot_config = &config.slot_configs[other_slot_id];
+                let later_slot_options = &config.slot_options[other_slot_id];
 
-                for other_slot_id in 0..config.slot_configs.len() {
-                    if other_slot_id == slot_id || fixed_slots[other_slot_id] {
-                        continue;
-                    }
+                let dupe_ids = dupes_by_length
+                    .as_ref()
+                    .and_then(|dupes_by_length| dupes_by_length.get(&later_slot_config.length));
 
-                    let later_slot_config = &config.slot_configs[other_slot_id];
-                    let later_slot_options = &config.slot_options[other_slot_id];
-
-                    let dupe_ids = dupes_by_length
-                        .as_ref()
-                        .and_then(|dupes_by_length| dupes_by_length.get(&later_slot_config.length));
-
-                    if let Some(dupe_ids) = dupe_ids {
-                        for &word_id in later_slot_options.iter() {
-                            if !adapter.is_word_eliminated(other_slot_id, word_id)
-                                && dupe_ids.contains(&word_id)
-                                && !slot_states[other_slot_id].eliminations.contains(&word_id)
-                            {
-                                eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
-                            }
+                if let Some(dupe_ids) = dupe_ids {
+                    for &word_id in later_slot_options.iter() {
+                        if !adapter.is_word_eliminated(other_slot_id, word_id)
+                            && dupe_ids.contains(&word_id)
+                            && !slot_states[other_slot_id].eliminations.contains(&word_id)
+                        {
+                            eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
                         }
                     }
                 }
-            } else {
-                eliminate_simple_dupes()?;
             }
 
             // Any other special constraints could also be added here (e.g., two words not being

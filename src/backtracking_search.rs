@@ -1148,7 +1148,6 @@ mod tests {
             .word_list
             .dupe_index
             .as_mut()
-            .unwrap()
             .add_dupe_pair(seamoss_id, ass_id);
 
         let result_2 =
