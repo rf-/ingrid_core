@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(opts[0].len(), 1, "filled-in entry has one option");
         assert_eq!(
             opts[6].len(),
-            5,
+            9,
             "parallel entry has reduced number of options"
         );
         assert_eq!(

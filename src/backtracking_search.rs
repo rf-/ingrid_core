@@ -1124,12 +1124,12 @@ mod tests {
             render_grid(&grid_config.to_config_ref(), &result_1.choices),
             indoc! {"
             .ass...
-            .rail..
-            crimean
-            yalitza
-            dyelots
-            ..dafe.
-            ...rfc.
+            .rois..
+            seamoss
+            haricot
+            erelong
+            ..deli.
+            ...sda.
             "}
             .trim()
         );
@@ -1141,17 +1141,15 @@ mod tests {
             )
         };
 
-        let crimean_id = get_id(&grid_config.word_list, "crimean");
+        let seamoss_id = get_id(&grid_config.word_list, "seamoss");
         let ass_id = get_id(&grid_config.word_list, "ass");
-
-        println!("{crimean_id:?}, {ass_id:?}");
 
         grid_config
             .word_list
             .dupe_index
             .as_mut()
             .unwrap()
-            .add_dupe_pair(crimean_id, ass_id);
+            .add_dupe_pair(seamoss_id, ass_id);
 
         let result_2 =
             find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
@@ -1160,12 +1158,12 @@ mod tests {
             render_grid(&grid_config.to_config_ref(), &result_2.choices),
             indoc! {"
             .ass...
-            .rail..
-            animate
-            politer
+            .rois..
+            siamese
+            merinos
             useless
-            ..dans.
-            ...rsa.
+            ..deca.
+            ...sad.
             "}
             .trim()
         );
