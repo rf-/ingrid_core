@@ -459,7 +459,7 @@ pub fn generate_slot_options(
                     .iter()
                     .map(|&glyph_id| word_list.glyphs[glyph_id])
                     .collect();
-                let (new_word_id, _) = word_list.add_word(
+                let (_, new_word_id) = word_list.add_word(
                     &RawWordListEntry {
                         normalized: word_string.clone(),
                         canonical: word_string,

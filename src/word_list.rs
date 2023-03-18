@@ -201,6 +201,9 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
 
 type BoxedDupeIndex = Box<dyn AnyDupeIndex + Send + Sync>;
 
+type OnUpdateCallback =
+    Box<dyn FnMut(&mut WordList, &[GlobalWordId], &[GlobalWordId]) + Send + Sync>;
+
 /// A struct representing the currently-loaded word list(s). This contains information that is
 /// static regardless of grid geometry or our progress through a fill (although we do configure a
 /// `max_length` that depends on the size of the grid, since it helps performance to avoid
@@ -227,6 +230,9 @@ pub struct WordList {
 
     /// The maximum word length provided when configuring the WordList.
     pub max_length: usize,
+
+    /// Callback run after adding or removing words.
+    pub on_update: Option<OnUpdateCallback>,
 }
 
 /// A single word list entry, as provided when instantiating or updating `WordList`.
@@ -344,6 +350,7 @@ impl WordList {
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             max_length,
+            on_update: None,
         };
 
         instance.replace_list(raw_word_list, max_length, false);
@@ -351,8 +358,20 @@ impl WordList {
         instance
     }
 
-    /// Add the given word to the list. The word must not be part of the list yet.
-    pub fn add_word(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> (WordId, &Word) {
+    /// Add the given word to the list and trigger the update callback. The word must not be part of the list yet.
+    pub fn add_word(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
+        let global_word_id = self.add_word_silent(raw_entry, hidden);
+
+        if let Some(mut on_update) = self.on_update.take() {
+            on_update(self, &[global_word_id], &[]);
+            self.on_update = Some(on_update);
+        }
+
+        global_word_id
+    }
+
+    /// Add the given word to the list without triggering the update callback. The word must not be part of the list yet.
+    fn add_word_silent(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
         let word_length = raw_entry.normalized.len();
         let word_id = self.words[word_length].len();
 
@@ -382,25 +401,27 @@ impl WordList {
             dupe_index.add_word(word_id, &self.words[word_length][word_id]);
         }
 
-        (word_id, &self.words[word_length][word_id])
+        (word_length, word_id)
     }
 
     /// Add all of the given words to the list, and hide any non-hidden words that aren't included
     /// in the new list. We don't fully remove them because we want to keep all of the ids stable
     /// and they may still be referenced elsewhere.
     ///
-    /// We return a tuple of two sets, one of added words and one of removed words. As an
-    /// optimization, we don't populate the added set unless the caller asks us to (since it's
-    /// pointless when we're initializing the list for the first time and everything is new).
+    /// We return a boolean indicating whether we added any words, along with a set of removed
+    /// words. If `silent` is false and an `on_update` callback is present, we track both added and
+    /// removed words and pass them into the callback.
     pub fn replace_list(
         &mut self,
         raw_word_list: &[RawWordListEntry],
         max_length: usize,
-        track_added_set: bool,
-    ) -> (HashSet<GlobalWordId>, HashSet<GlobalWordId>) {
+        silent: bool,
+    ) -> (bool, HashSet<GlobalWordId>) {
         // Start with the assumption that we're removing everything.
         let mut removed_words_map = self.word_id_by_string.clone();
-        let mut added_words_set = HashSet::new();
+        let mut added_words: Vec<GlobalWordId> = vec![];
+        let mut added_any_words = false;
+        let silent = silent || self.on_update.is_none();
 
         // If we're expanding our previous max length, make sure the `words` vec has enough entries.
         while self.words.len() < max_length + 1 {
@@ -423,11 +444,13 @@ impl WordList {
                 word.hidden = false;
                 word.canonical_string = raw_entry.canonical.clone();
                 removed_words_map.remove(&raw_entry.normalized);
-            } else if track_added_set {
-                let (added_word_id, _) = self.add_word(raw_entry, false);
-                added_words_set.insert((word_length, added_word_id));
+            } else if !silent {
+                added_any_words = true;
+                let added_word_id = self.add_word_silent(raw_entry, false);
+                added_words.push(added_word_id);
             } else {
-                self.add_word(raw_entry, false);
+                added_any_words = true;
+                self.add_word_silent(raw_entry, false);
             }
         }
 
@@ -441,7 +464,16 @@ impl WordList {
             })
             .collect();
 
-        (added_words_set, removed_words_set)
+        if let Some(mut on_update) = self.on_update.take() {
+            on_update(
+                self,
+                &added_words,
+                &removed_words_set.iter().copied().collect::<Vec<_>>(),
+            );
+            self.on_update = Some(on_update);
+        }
+
+        (added_any_words, removed_words_set)
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
@@ -520,6 +552,7 @@ pub mod tests {
     use crate::word_list::{AnyDupeIndex, DupeIndex, GlobalWordId, RawWordListEntry, WordList};
     use std::path;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     #[must_use]
     pub fn dictionary_path() -> PathBuf {
@@ -562,7 +595,23 @@ pub mod tests {
         // This doesn't do anything except make sure it's OK to call this method unboxed
         word_list.populate_dupe_index(&mut soft_dupe_index);
 
-        let (golf_id, golf_word) = word_list.add_word(
+        let soft_dupe_index = Arc::new(Mutex::new(soft_dupe_index));
+
+        word_list.on_update = {
+            let soft_dupe_index = soft_dupe_index.clone();
+
+            Some(Box::new(
+                move |word_list, added_word_ids, _removed_word_ids| {
+                    let mut soft_dupe_index = soft_dupe_index.lock().unwrap();
+
+                    for &(word_length, word_id) in added_word_ids {
+                        soft_dupe_index.add_word(word_id, &word_list.words[word_length][word_id]);
+                    }
+                },
+            ))
+        };
+
+        let golf_id = word_list.add_word(
             &RawWordListEntry {
                 normalized: "golf".into(),
                 canonical: "golf".into(),
@@ -570,9 +619,8 @@ pub mod tests {
             },
             false,
         );
-        soft_dupe_index.add_word(golf_id, golf_word);
 
-        let (golfy_id, golfy_word) = word_list.add_word(
+        let golfy_id = word_list.add_word(
             &RawWordListEntry {
                 normalized: "golfy".into(),
                 canonical: "golfy".into(),
@@ -580,9 +628,8 @@ pub mod tests {
             },
             false,
         );
-        soft_dupe_index.add_word(golfy_id, golfy_word);
 
-        let (golves_id, golves_word) = word_list.add_word(
+        let golves_id = word_list.add_word(
             &RawWordListEntry {
                 normalized: "golves".into(),
                 canonical: "golves".into(),
@@ -590,7 +637,6 @@ pub mod tests {
             },
             false,
         );
-        soft_dupe_index.add_word(golves_id, golves_word);
 
         let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index
@@ -600,37 +646,38 @@ pub mod tests {
         };
 
         let assert_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
-            assert!(is_dupe(index, id_1, id_2));
-            assert!(is_dupe(index, id_2, id_1));
+            assert!(is_dupe(index, id_1, id_2), "is_dupe({id_1:?}, {id_2:?})");
+            assert!(is_dupe(index, id_2, id_1), "is_dupe({id_2:?}, {id_1:?})");
         };
 
         let assert_not_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
-            assert!(!is_dupe(index, id_1, id_2));
-            assert!(!is_dupe(index, id_2, id_1));
+            assert!(!is_dupe(index, id_1, id_2), "!is_dupe({id_1:?}, {id_2:?})");
+            assert!(!is_dupe(index, id_2, id_1), "!is_dupe({id_2:?}, {id_1:?})");
         };
 
         let main_index = &word_list.dupe_index.unwrap();
+        let mut soft_dupe_index = soft_dupe_index.lock().unwrap();
 
         // Regular index doesn't see any of these as dupes
-        assert_not_dupe(main_index.as_ref(), (4, golf_id), (5, golfy_id));
-        assert_not_dupe(main_index.as_ref(), (4, golf_id), (6, golves_id));
-        assert_not_dupe(main_index.as_ref(), (5, golfy_id), (6, golves_id));
+        assert_not_dupe(main_index.as_ref(), golf_id, golfy_id);
+        assert_not_dupe(main_index.as_ref(), golf_id, golves_id);
+        assert_not_dupe(main_index.as_ref(), golfy_id, golves_id);
 
         // Secondary index sees golf/golfy as dupes but not golf/golves
-        assert_dupe(&soft_dupe_index, (4, golf_id), (5, golfy_id));
-        assert_not_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
-        assert_not_dupe(&soft_dupe_index, (5, golfy_id), (6, golves_id));
+        assert_dupe(&*soft_dupe_index, golf_id, golfy_id);
+        assert_not_dupe(&*soft_dupe_index, golf_id, golves_id);
+        assert_not_dupe(&*soft_dupe_index, golfy_id, golves_id);
 
         // Add custom pair
-        soft_dupe_index.add_dupe_pair((4, golf_id), (6, golves_id));
+        soft_dupe_index.add_dupe_pair(golf_id, golves_id);
 
         // After customization, golf/golves is a dupe
-        assert_dupe(&soft_dupe_index, (4, golf_id), (5, golfy_id));
-        assert_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
-        assert_not_dupe(&soft_dupe_index, (5, golfy_id), (6, golves_id));
+        assert_dupe(&*soft_dupe_index, golf_id, golfy_id);
+        assert_dupe(&*soft_dupe_index, golf_id, golves_id);
+        assert_not_dupe(&*soft_dupe_index, golfy_id, golves_id);
 
         // Remove custom pair and check again
-        soft_dupe_index.remove_dupe_pair((4, golf_id), (6, golves_id));
-        assert_not_dupe(&soft_dupe_index, (4, golf_id), (6, golves_id));
+        soft_dupe_index.remove_dupe_pair(golf_id, golves_id);
+        assert_not_dupe(&*soft_dupe_index, golf_id, golves_id);
     }
 }

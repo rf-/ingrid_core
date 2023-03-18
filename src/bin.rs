@@ -88,7 +88,7 @@ fn main() -> Result<(), Error> {
         ),
     };
 
-    if word_list.word_id_by_string.len() == 0 {
+    if word_list.word_id_by_string.is_empty() {
         return Err(Error("Wordlist is empty".into()));
     }
 
