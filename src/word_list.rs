@@ -358,6 +358,27 @@ impl WordList {
         instance
     }
 
+    /// If the given normalized word is already in the list, return its id; if not, add it as a
+    /// hidden entry and return the id of that.
+    pub fn get_word_id_or_add_hidden(&mut self, normalized_word: &str) -> GlobalWordId {
+        self.word_id_by_string
+            .get(normalized_word)
+            .copied()
+            .map_or_else(
+                || {
+                    self.add_word(
+                        &RawWordListEntry {
+                            normalized: normalized_word.to_string(),
+                            canonical: normalized_word.to_string(),
+                            score: 0,
+                        },
+                        true,
+                    )
+                },
+                |word_id| (normalized_word.len(), word_id),
+            )
+    }
+
     /// Add the given word to the list and trigger the update callback. The word must not be part of the list yet.
     pub fn add_word(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
         let global_word_id = self.add_word_silent(raw_entry, hidden);
