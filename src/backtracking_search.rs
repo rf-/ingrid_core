@@ -286,10 +286,33 @@ fn maintain_arc_consistency(
             eliminations: &HashSet<WordId>,
         ) -> Option<WordId> {
             self.slots[slot_id].fixed_word_id.or_else(|| {
-                self.config.slot_options[slot_id]
-                    .iter()
-                    .find(|word_id| !eliminations.contains(word_id))
-                    .copied()
+                if CHECK_INVARIANTS {
+                    let first_two = self.config.slot_options[slot_id]
+                        .iter()
+                        .filter(|&word_id| {
+                            self.slots[slot_id].eliminations[*word_id].is_none()
+                                && !eliminations.contains(word_id)
+                        })
+                        .copied()
+                        .take(2)
+                        .collect::<Vec<_>>();
+                    if first_two.len() == 1 {
+                        Some(first_two[0])
+                    } else {
+                        panic!(
+                            "get_single_option: called with slot that had {} options",
+                            first_two.len()
+                        );
+                    }
+                } else {
+                    self.config.slot_options[slot_id]
+                        .iter()
+                        .find(|&word_id| {
+                            self.slots[slot_id].eliminations[*word_id].is_none()
+                                && !eliminations.contains(word_id)
+                        })
+                        .copied()
+                }
             })
         }
     }
