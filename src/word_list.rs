@@ -411,12 +411,13 @@ impl WordList {
     /// Add the given word to the list without triggering the update callback. The word must not be part of the list yet.
     fn add_word_silent(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
         let word_length = raw_entry.normalized.len();
-        let word_id = self.words[word_length].len();
 
         // We can add words above `max_length`, but we need to make sure there are enough buckets.
         while self.words.len() < word_length + 1 {
             self.words.push(vec![]);
         }
+
+        let word_id = self.words[word_length].len();
 
         let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
             .normalized
