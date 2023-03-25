@@ -97,10 +97,7 @@ pub trait AnyDupeIndex {
     fn add_word(&mut self, word_id: WordId, word: &Word);
     fn add_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
     fn remove_dupe_pair(&mut self, global_word_id_1: GlobalWordId, global_word_id_2: GlobalWordId);
-    fn get_dupes_by_length(
-        &self,
-        global_word_id: GlobalWordId,
-    ) -> Option<HashMap<usize, HashSet<WordId>>>;
+    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>>;
 
     // Allow moving extra dupe pairs in and out to facilitate replacing the word list.
     fn take_extra_dupes(&mut self) -> HashMap<GlobalWordId, Vec<GlobalWordId>>;
@@ -172,17 +169,17 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
     }
 
     /// For a given word, get a map containing all words that duplicate it, indexed by their length.
-    fn get_dupes_by_length(
-        &self,
-        global_word_id: GlobalWordId,
-    ) -> Option<HashMap<usize, HashSet<WordId>>> {
+    fn get_dupes_by_length(&self, global_word_id: GlobalWordId) -> HashMap<usize, HashSet<WordId>> {
+        let mut dupes_by_length: HashMap<usize, HashSet<WordId>> = HashMap::new();
+
+        // All words duplicate themselves, regardless of length.
+        dupes_by_length
+            .entry(global_word_id.0)
+            .or_insert_with(HashSet::new)
+            .insert(global_word_id.1);
+
         let group_ids = self.group_keys_by_word.get(&global_word_id);
         let extra_dupes = self.extra_dupes_by_word.get(&global_word_id);
-        if group_ids.is_none() && extra_dupes.is_none() {
-            return None;
-        }
-
-        let mut dupes_by_length: HashMap<usize, HashSet<WordId>> = HashMap::new();
 
         if let Some(group_ids) = group_ids {
             for &group_id in group_ids {
@@ -204,7 +201,7 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
             }
         }
 
-        Some(dupes_by_length)
+        dupes_by_length
     }
 
     fn take_extra_dupes(&mut self) -> HashMap<GlobalWordId, Vec<GlobalWordId>> {
@@ -688,7 +685,8 @@ pub mod tests {
         let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index
                 .get_dupes_by_length(id_1)
-                .and_then(|dupes_by_length| dupes_by_length.get(&id_2.0).cloned())
+                .get(&id_2.0)
+                .cloned()
                 .map_or(false, |dupes| dupes.contains(&id_2.1))
         };
 
