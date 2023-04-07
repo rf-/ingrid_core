@@ -1151,8 +1151,8 @@ mod tests {
             seamoss
             haricot
             erelong
-            ..deli.
-            ...sda.
+            ..deon.
+            ...sly.
             "}
             .trim()
         );
