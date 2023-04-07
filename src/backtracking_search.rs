@@ -791,7 +791,7 @@ mod tests {
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
     use crate::word_list::tests::dictionary_path;
-    use crate::word_list::{GlobalWordId, WordList};
+    use crate::word_list::{GlobalWordId, RawWordListEntry, WordList};
     use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -1188,6 +1188,36 @@ mod tests {
             ...sad.
             "}
             .trim()
+        );
+    }
+
+    #[test]
+    fn test_unusual_characters() {
+        let template = "
+            #...###
+            #....##
+            ......â
+            .......
+            .......
+            ##....#
+            ###...#
+            "
+        .trim();
+
+        let mut raw_word_list = WordList::load_dict_file(&dictionary_path()).unwrap();
+        raw_word_list.insert(0, RawWordListEntry::new("monsutâ".into(), 50));
+        raw_word_list.insert(0, RawWordListEntry::new("âbc".into(), 50));
+
+        let word_list = WordList::new(&raw_word_list, Some(7), None);
+
+        let grid_config = generate_grid_config_from_template_string(word_list, template, 40.0);
+
+        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+
+        println!("{:?}", result.statistics);
+        println!(
+            "{}",
+            render_grid(&grid_config.to_config_ref(), &result.choices)
         );
     }
 }

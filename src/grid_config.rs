@@ -459,14 +459,8 @@ pub fn generate_slot_options(
                     .iter()
                     .map(|&glyph_id| word_list.glyphs[glyph_id])
                     .collect();
-                let (_, new_word_id) = word_list.add_word(
-                    &RawWordListEntry {
-                        normalized: word_string.clone(),
-                        canonical: word_string,
-                        score: 0,
-                    },
-                    true,
-                );
+                let (_, new_word_id) =
+                    word_list.add_word(&RawWordListEntry::new(word_string, 0), true);
                 slot_options.push(vec![new_word_id]);
             }
         } else {
@@ -675,8 +669,8 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
         .max()
         .expect("Grid must have slots");
 
-    let mut grid: Vec<_> = (0..=max_y)
-        .map(|_| (0..=max_x).map(|_| ".").collect::<Vec<_>>().join(""))
+    let mut grid: Vec<Vec<Option<char>>> = (0..=max_y)
+        .map(|_| (0..=max_x).map(|_| None).collect::<Vec<_>>())
         .collect();
 
     for &Choice { slot_id, word_id } in choices {
@@ -695,11 +689,18 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
                 ),
             };
 
-            grid[y].replace_range(x..=x, &config.word_list.glyphs[glyph].to_string());
+            grid[y][x] = Some(config.word_list.glyphs[glyph]);
         }
     }
 
-    grid.join("\n")
+    grid.iter()
+        .map(|line| {
+            line.iter()
+                .map(|cell| cell.unwrap_or('.').to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(all(test, feature = "serde"))]

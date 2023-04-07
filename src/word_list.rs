@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::path::Path;
 use std::{fmt, fs, mem};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{MAX_GLYPH_COUNT, MAX_SLOT_LENGTH};
 
@@ -59,6 +60,17 @@ pub struct Word {
     /// Is this word currently available for autofill? This will be false for non-words that are
     /// part of an input grid or for words that have been "removed" from the list dynamically.
     pub hidden: bool,
+}
+
+/// Given a canonical word string from a dictionary file, turn it into the normalized form we'll
+/// use in the actual fill engine.
+#[must_use]
+pub fn normalize_word(canonical: &str) -> String {
+    canonical
+        .to_lowercase()
+        .nfc() // Normalize Unicode combining forms
+        .filter(|c| c.is_alphanumeric())
+        .collect()
 }
 
 /// A struct used to track which words in the list share N-letter substrings, so that we can
@@ -252,9 +264,23 @@ pub struct WordList {
 /// A single word list entry, as provided when instantiating or updating `WordList`.
 #[allow(dead_code)]
 pub struct RawWordListEntry {
+    pub length: usize,
     pub normalized: String,
     pub canonical: String,
     pub score: i32,
+}
+
+impl RawWordListEntry {
+    #[must_use]
+    pub fn new(canonical: String, score: i32) -> RawWordListEntry {
+        let normalized = normalize_word(&canonical);
+        RawWordListEntry {
+            length: normalized.chars().count(),
+            normalized,
+            canonical,
+            score,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -309,11 +335,7 @@ impl WordList {
                 }
 
                 let canonical = line_parts[0].trim().to_string();
-                let normalized: String = canonical
-                    .to_lowercase()
-                    .chars()
-                    .filter(|c| c.is_alphanumeric())
-                    .collect();
+                let normalized: String = normalize_word(&canonical);
                 if normalized.is_empty() {
                     return Err(WordListError::InvalidWord(line_parts[0].into()));
                 }
@@ -323,6 +345,7 @@ impl WordList {
                 };
 
                 Ok(RawWordListEntry {
+                    length: normalized.chars().count(),
                     normalized,
                     canonical,
                     score,
@@ -352,7 +375,7 @@ impl WordList {
         let max_length = max_length.unwrap_or_else(|| {
             raw_word_list
                 .iter()
-                .map(|entry| entry.normalized.len())
+                .map(|entry| entry.length)
                 .max()
                 .unwrap_or(0)
         });
@@ -382,6 +405,7 @@ impl WordList {
                 || {
                     self.add_word(
                         &RawWordListEntry {
+                            length: normalized_word.chars().count(),
                             normalized: normalized_word.to_string(),
                             canonical: normalized_word.to_string(),
                             score: 0,
@@ -389,7 +413,7 @@ impl WordList {
                         true,
                     )
                 },
-                |word_id| (normalized_word.len(), word_id),
+                |word_id| (normalized_word.chars().count(), word_id),
             )
     }
 
@@ -407,7 +431,13 @@ impl WordList {
 
     /// Add the given word to the list without triggering the update callback. The word must not be part of the list yet.
     fn add_word_silent(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
-        let word_length = raw_entry.normalized.len();
+        let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
+            .normalized
+            .chars()
+            .map(|c| self.glyph_id_for_char(c))
+            .collect();
+
+        let word_length = glyphs.len();
 
         // We can add words above `max_length`, but we need to make sure there are enough buckets.
         while self.words.len() < word_length + 1 {
@@ -415,12 +445,6 @@ impl WordList {
         }
 
         let word_id = self.words[word_length].len();
-
-        let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
-            .normalized
-            .chars()
-            .map(|c| self.glyph_id_for_char(c))
-            .collect();
 
         self.words[word_length].push(Word {
             normalized_string: raw_entry.normalized.clone(),
@@ -458,7 +482,14 @@ impl WordList {
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>) {
         // Start with the assumption that we're removing everything.
-        let mut removed_words_map = self.word_id_by_string.clone();
+        let mut removed_words_set: HashSet<GlobalWordId> = self
+            .words
+            .iter()
+            .enumerate()
+            .flat_map(|(length, word_ids)| {
+                (0..word_ids.len()).map(move |word_id| (length, word_id))
+            })
+            .collect();
         let mut added_words: Vec<GlobalWordId> = vec![];
         let mut added_any_words = false;
         let silent = silent || self.on_update.is_none();
@@ -471,7 +502,7 @@ impl WordList {
 
         // Now go through our new words and add them.
         for raw_entry in raw_word_list.iter() {
-            let word_length = raw_entry.normalized.len();
+            let word_length = raw_entry.length;
             if word_length > max_length {
                 continue;
             }
@@ -483,7 +514,7 @@ impl WordList {
                 word.score = raw_entry.score as f32;
                 word.hidden = false;
                 word.canonical_string = raw_entry.canonical.clone();
-                removed_words_map.remove(&raw_entry.normalized);
+                removed_words_set.remove(&(word_length, existing_word_id));
             } else if !silent {
                 added_any_words = true;
                 let added_word_id = self.add_word_silent(raw_entry, false);
@@ -495,14 +526,9 @@ impl WordList {
         }
 
         // Finally, hide any words that were in our existing list but aren't in the new one.
-        let removed_words_set: HashSet<GlobalWordId> = removed_words_map
-            .iter()
-            .map(|(word_str, &word_id)| {
-                let word_length = word_str.len();
-                self.words[word_length][word_id].hidden = true;
-                (word_length, word_id)
-            })
-            .collect();
+        for &(length, word_id) in &removed_words_set {
+            self.words[length][word_id].hidden = true;
+        }
 
         if let Some(mut on_update) = self.on_update.take() {
             on_update(
@@ -632,6 +658,30 @@ pub mod tests {
     }
 
     #[test]
+    fn test_unusual_characters() {
+        let word_list = WordList::new(
+            &[
+                // Non-English character expressed as one two-byte `char`
+                RawWordListEntry::new("monsutâ".into(), 50),
+                // Non-English character expressed as two chars w/ combining form
+                RawWordListEntry::new("hélen".into(), 50),
+            ],
+            None,
+            None,
+        );
+
+        assert_eq!(word_list.max_length, 7);
+        assert_eq!(
+            word_list
+                .words
+                .iter()
+                .map(|bucket| bucket.len())
+                .collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 0, 1, 0, 1]
+        );
+    }
+
+    #[test]
     fn test_soft_dupe_index() {
         let mut word_list = WordList::new(&[], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
@@ -655,32 +705,11 @@ pub mod tests {
             ))
         };
 
-        let golf_id = word_list.add_word(
-            &RawWordListEntry {
-                normalized: "golf".into(),
-                canonical: "golf".into(),
-                score: 0,
-            },
-            false,
-        );
+        let golf_id = word_list.add_word(&RawWordListEntry::new("golf".into(), 0), false);
 
-        let golfy_id = word_list.add_word(
-            &RawWordListEntry {
-                normalized: "golfy".into(),
-                canonical: "golfy".into(),
-                score: 0,
-            },
-            false,
-        );
+        let golfy_id = word_list.add_word(&RawWordListEntry::new("golfy".into(), 0), false);
 
-        let golves_id = word_list.add_word(
-            &RawWordListEntry {
-                normalized: "golves".into(),
-                canonical: "golves".into(),
-                score: 0,
-            },
-            false,
-        );
+        let golves_id = word_list.add_word(&RawWordListEntry::new("golves".into(), 0), false);
 
         let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index
