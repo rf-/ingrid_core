@@ -20,7 +20,7 @@ use crate::arc_consistency::{
 use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
 use crate::word_list::WordId;
-use crate::{CHECK_INVARIANTS, MAX_SLOT_COUNT};
+use crate::MAX_SLOT_COUNT;
 
 /// If the previously-attempted slot is within this distance of the "best" (lowest-priority-value)
 /// slot, we should stick with the previous one instead of switching (per Balafoutis).
@@ -115,9 +115,8 @@ impl Slot {
         word_id: WordId,
         blamed_slot_id: Option<SlotId>,
     ) {
-        if CHECK_INVARIANTS
-            && (self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some())
-        {
+        #[cfg(feature = "check_invariants")]
+        if self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some() {
             panic!("Editing eliminations for a fixed slot?");
         }
 
@@ -132,9 +131,8 @@ impl Slot {
 
     /// Record that a word is now available again for this slot.
     fn remove_elimination(&mut self, config: &GridConfig, word_id: WordId) {
-        if CHECK_INVARIANTS
-            && (self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some())
-        {
+        #[cfg(feature = "check_invariants")]
+        if self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some() {
             panic!("Editing eliminations for a fixed slot?");
         }
 
@@ -182,6 +180,18 @@ impl Slot {
             })
             .or_else(|| {
                 if self.remaining_option_count == 1 {
+                    #[cfg(feature = "check_invariants")]
+                    {
+                        assert_eq!(
+                            config.slot_options[self.id]
+                                .iter()
+                                .filter(|&&word_id| self.eliminations[word_id].is_none())
+                                .count(),
+                            1,
+                            "slot with one remaining option must have eliminations for all others"
+                        );
+                    }
+
                     let word_id = config.slot_options[self.id]
                         .iter()
                         .find(|&&word_id| self.eliminations[word_id].is_none());
@@ -286,7 +296,8 @@ fn maintain_arc_consistency(
             eliminations: &HashSet<WordId>,
         ) -> Option<WordId> {
             self.slots[slot_id].fixed_word_id.or_else(|| {
-                if CHECK_INVARIANTS {
+                #[cfg(feature = "check_invariants")]
+                {
                     let first_two = self.config.slot_options[slot_id]
                         .iter()
                         .filter(|&word_id| {
@@ -296,23 +307,25 @@ fn maintain_arc_consistency(
                         .copied()
                         .take(2)
                         .collect::<Vec<_>>();
+
                     if first_two.len() == 1 {
-                        Some(first_two[0])
+                        return Some(first_two[0]);
                     } else {
                         panic!(
                             "get_single_option: called with slot that had {} options",
                             first_two.len()
                         );
                     }
-                } else {
-                    self.config.slot_options[slot_id]
-                        .iter()
-                        .find(|&word_id| {
-                            self.slots[slot_id].eliminations[*word_id].is_none()
-                                && !eliminations.contains(word_id)
-                        })
-                        .copied()
                 }
+
+                #[cfg(not(feature = "check_invariants"))]
+                self.config.slot_options[slot_id]
+                    .iter()
+                    .find(|&word_id| {
+                        self.slots[slot_id].eliminations[*word_id].is_none()
+                            && !eliminations.contains(word_id)
+                    })
+                    .copied()
             })
         }
     }
@@ -343,23 +356,26 @@ fn maintain_arc_consistency(
         })
         .collect::<Vec<_>>();
 
-    let fixed_slots: Vec<bool> = if matches!(mode, ArcConsistencyMode::Initial) {
-        // When establishing initial consistency, only slots whose contents were provided verbatim
-        // should be considered fixed -- other slots might happen to only have one available option,
-        // but then that option could be ruled out by crossings.
-        slots
-            .iter()
-            .map(|slot| slot.fixed_word_id.is_some())
-            .collect()
-    } else {
-        // When maintaining consistency later on, we can treat all slots with exactly one option as
-        // fixed, because all of their crossings will already have been pruned to only compatible
-        // options and we'll already have removed any possible dupe-rule violations from the rest of
-        // the grid. Also if we're evaluating a choice we'll treat that choice's slot as fixed.
-        slots
-            .iter()
-            .map(|slot| remaining_option_counts[slot.id] == 1)
-            .collect()
+    let fixed_slots: Vec<bool> = match mode {
+        ArcConsistencyMode::Initial => {
+            // When establishing initial consistency, only slots whose contents were provided verbatim
+            // should be considered fixed -- other slots might happen to only have one available option,
+            // but then that option could be ruled out by crossings.
+            slots
+                .iter()
+                .map(|slot| slot.fixed_word_id.is_some())
+                .collect()
+        }
+        _ => {
+            // When maintaining consistency later on, we can treat all slots with exactly one option as
+            // fixed, because all of their crossings will already have been pruned to only compatible
+            // options and we'll already have removed any possible dupe-rule violations from the rest of
+            // the grid. Also if we're evaluating a choice we'll treat that choice's slot as fixed.
+            slots
+                .iter()
+                .map(|slot| remaining_option_counts[slot.id] == 1)
+                .collect()
+        }
     };
 
     let starting_slot_id = match mode {

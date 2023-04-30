@@ -459,8 +459,13 @@ pub fn generate_slot_options(
                     .iter()
                     .map(|&glyph_id| word_list.glyphs[glyph_id])
                     .collect();
-                let (_, new_word_id) =
+
+                let (_new_word_length, new_word_id) =
                     word_list.add_word(&RawWordListEntry::new(word_string, 0), true);
+
+                #[cfg(feature = "check_invariants")]
+                assert_eq!(complete_fill.len(), _new_word_length);
+
                 slot_options.push(vec![new_word_id]);
             }
         } else {

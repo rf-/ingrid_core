@@ -178,6 +178,16 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         }
     }
 
+    #[cfg(feature = "check_invariants")]
+    for (slot_id, &fixed) in fixed_slots.iter().enumerate() {
+        if !fixed {
+            continue;
+        }
+        adapter
+            .get_single_option(slot_id, &slot_states[slot_id].eliminations)
+            .expect("fixed slot must have exactly one option");
+    }
+
     // Whenever we eliminate an option from a slot, we need to do some bookkeeping and potentially
     // enqueue cells from that slot for further propagation.
     let eliminate_word = |slot_states: &mut [ArcConsistencySlotState],
