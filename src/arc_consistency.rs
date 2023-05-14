@@ -155,6 +155,13 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         |evaluating_slot| vec![evaluating_slot],
     );
     for slot_id in initial_slot_ids {
+        // If any slot has zero options, we can fail immediately.
+        if slot_states[slot_id].option_count == 0 {
+            return Err(ArcConsistencyFailure {
+                weight_updates: HashMap::new(),
+            });
+        }
+
         // Queue all cells that have a crossing with a non-fixed slot.
         slot_states[slot_id].queued_cell_idxs = Some(
             config.slot_configs[slot_id]
