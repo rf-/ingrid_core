@@ -5,6 +5,7 @@ use ingrid_core::word_list::WordList;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
+use unicode_normalization::UnicodeNormalization;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
 
@@ -43,7 +44,7 @@ fn main() -> Result<(), Error> {
         .map_err(|_| Error(format!("Couldn't read file '{}'", args.grid_path)))?
         .trim()
         .lines()
-        .map(|line| line.trim())
+        .map(|line| line.trim().to_lowercase().nfc().collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
@@ -54,9 +55,10 @@ fn main() -> Result<(), Error> {
         return Err(Error("Grid must have at least one row".into()));
     }
 
+
     if raw_grid_content
         .lines()
-        .map(|line| line.len())
+        .map(|line| line.chars().count())
         .collect::<HashSet<_>>()
         .len()
         != 1
@@ -64,7 +66,7 @@ fn main() -> Result<(), Error> {
         return Err(Error("Rows in grid must all be the same length".into()));
     }
 
-    let width = raw_grid_content.lines().next().unwrap().len() - 1;
+    let width = raw_grid_content.lines().next().unwrap().chars().count() - 1;
     let max_side = width.max(height);
 
     if !args
