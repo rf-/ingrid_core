@@ -69,7 +69,7 @@ pub fn normalize_word(canonical: &str) -> String {
     canonical
         .to_lowercase()
         .nfc() // Normalize Unicode combining forms
-        .filter(|c| c.is_alphanumeric())
+        .filter(|c| !c.is_whitespace())
         .collect()
 }
 
