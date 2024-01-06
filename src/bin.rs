@@ -55,7 +55,6 @@ fn main() -> Result<(), Error> {
         return Err(Error("Grid must have at least one row".into()));
     }
 
-
     if raw_grid_content
         .lines()
         .map(|line| line.chars().count())

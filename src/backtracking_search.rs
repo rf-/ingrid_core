@@ -1162,13 +1162,13 @@ mod tests {
         assert_eq!(
             render_grid(&grid_config.to_config_ref(), &result_1.choices),
             indoc! {"
-            .fas...
+            .zas...
             .abit..
             airmass
-            troikas
+            troilus
             sealers
-            ..dere.
-            ...sse.
+            ..deng.
+            ...ste.
             "}
             .trim()
         );
@@ -1181,13 +1181,13 @@ mod tests {
         };
 
         let airmass_id = get_id(&grid_config.word_list, "airmass");
-        let fas_id = get_id(&grid_config.word_list, "fas");
+        let zas_id = get_id(&grid_config.word_list, "zas");
 
         grid_config
             .word_list
             .dupe_index
             .as_mut()
-            .add_dupe_pair(airmass_id, fas_id);
+            .add_dupe_pair(airmass_id, zas_id);
 
         let result_2 =
             find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
@@ -1195,13 +1195,13 @@ mod tests {
         assert_eq!(
             render_grid(&grid_config.to_config_ref(), &result_2.choices),
             indoc! {"
-            .zas...
+            .fas...
             .abit..
             airmass
-            troikas
+            troilus
             sealers
-            ..dere.
-            ...sse.
+            ..deny.
+            ...sta.
             "}
             .trim()
         );
