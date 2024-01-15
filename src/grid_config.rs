@@ -13,8 +13,9 @@ use serde_derive::{Deserialize, Serialize};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::types::{GlyphId, WordId};
 use crate::util::build_glyph_counts_by_cell;
-use crate::word_list::{GlyphId, RawWordListEntry, WordId, WordList};
+use crate::word_list::{RawWordListEntry, WordList};
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// An identifier for the intersection between two slots; these correspond one-to-one with checked

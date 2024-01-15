@@ -19,8 +19,8 @@ use std::fmt::Debug;
 use std::mem;
 
 use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotId};
+use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
-use crate::word_list::WordId;
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// Interface that needs to be implemented by callers to `establish_arc_consistency` to provide

@@ -18,8 +18,8 @@ use crate::arc_consistency::{
     establish_arc_consistency, ArcConsistencyAdapter, ArcConsistencyFailure, ArcConsistencySuccess,
 };
 use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
+use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
-use crate::word_list::WordId;
 use crate::MAX_SLOT_COUNT;
 
 /// If the previously-attempted slot is within this distance of the "best" (lowest-priority-value)
@@ -806,8 +806,9 @@ mod tests {
     use crate::grid_config::{
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
+    use crate::types::GlobalWordId;
     use crate::word_list::tests::dictionary_path;
-    use crate::word_list::{GlobalWordId, RawWordListEntry, WordList};
+    use crate::word_list::{RawWordListEntry, WordList};
     use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;

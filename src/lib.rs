@@ -9,7 +9,9 @@
 
 pub mod arc_consistency;
 pub mod backtracking_search;
+pub mod dupe_index;
 pub mod grid_config;
+pub mod types;
 pub mod util;
 pub mod word_list;
 

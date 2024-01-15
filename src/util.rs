@@ -1,6 +1,7 @@
 use smallvec::SmallVec;
 
-use crate::word_list::{WordId, WordList};
+use crate::types::WordId;
+use crate::word_list::WordList;
 use crate::MAX_GLYPH_COUNT;
 
 /// Structure used to efficiently prune options based on their crossings. One of these reflects all
