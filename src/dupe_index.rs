@@ -117,7 +117,7 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         // All words duplicate themselves, regardless of length.
         dupes_by_length
             .entry(global_word_id.0)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(global_word_id.1);
 
         let group_ids = self.group_keys_by_word.get(&global_word_id);
@@ -126,20 +126,14 @@ impl<const WINDOW_SIZE: usize> AnyDupeIndex for DupeIndex<WINDOW_SIZE> {
         if let Some(group_ids) = group_ids {
             for &group_id in group_ids {
                 for &(length, word) in &self.groups[group_id] {
-                    dupes_by_length
-                        .entry(length)
-                        .or_insert_with(HashSet::new)
-                        .insert(word);
+                    dupes_by_length.entry(length).or_default().insert(word);
                 }
             }
         }
 
         if let Some(extra_dupes) = extra_dupes {
-            for &(length, word) in extra_dupes.iter() {
-                dupes_by_length
-                    .entry(length)
-                    .or_insert_with(HashSet::new)
-                    .insert(word);
+            for &(length, word) in extra_dupes {
+                dupes_by_length.entry(length).or_default().insert(word);
             }
         }
 

@@ -338,7 +338,7 @@ impl WordList {
         self.max_length = max_length;
 
         // Now go through our new words and add them.
-        for raw_entry in raw_word_list.iter() {
+        for raw_entry in raw_word_list {
             let word_length = raw_entry.length;
             if word_length > max_length {
                 continue;
@@ -450,7 +450,7 @@ impl Debug for WordList {
                 &self.words.iter().map(Vec::len).collect::<Vec<_>>(),
             )
             .field("max_length", &self.max_length)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

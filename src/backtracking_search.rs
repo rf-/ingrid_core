@@ -102,7 +102,7 @@ impl Debug for Slot {
             )
             .field("remaining_option_count", &self.remaining_option_count)
             .field("fixed_word_id", &self.fixed_word_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -681,7 +681,7 @@ pub fn find_fill_for_seed(
 
             slots[undoing_choice.slot_id].clear_choice();
 
-            for slot in slots.iter_mut() {
+            for slot in &mut slots {
                 if slot.id != undoing_choice.slot_id && slot.fixed_word_id.is_none() {
                     slot.clear_eliminations(config, undoing_choice.slot_id);
                 }

@@ -16,7 +16,6 @@ use smallvec::{smallvec, SmallVec};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
-use std::mem;
 
 use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotId};
 use crate::types::WordId;
@@ -330,8 +329,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             };
 
             // We want to examine the slot's cells in descending order of crossing weight.
-            let mut cell_idxs =
-                mem::replace(&mut slot_states[slot_id].queued_cell_idxs, None).unwrap();
+            let mut cell_idxs = slot_states[slot_id].queued_cell_idxs.take().unwrap();
             cell_idxs.sort_by_cached_key(|&cell_idx| {
                 let crossing_id = config.slot_configs[slot_id].crossings[cell_idx]
                     .as_ref()
@@ -354,7 +352,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 let other_slot_config = &config.slot_configs[other_slot_id];
                 let other_slot_options = &config.slot_options[other_slot_id];
 
-                for &slot_option_word_id in other_slot_options.iter() {
+                for &slot_option_word_id in other_slot_options {
                     // If this word has already been eliminated, we don't need to check it again.
                     if adapter.is_word_eliminated(other_slot_id, slot_option_word_id)
                         || slot_states[other_slot_id]
@@ -415,7 +413,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 let later_slot_options = &config.slot_options[other_slot_id];
 
                 if let Some(dupe_ids) = dupes_by_length.get(&later_slot_config.length) {
-                    for &word_id in later_slot_options.iter() {
+                    for &word_id in later_slot_options {
                         if !adapter.is_word_eliminated(other_slot_id, word_id)
                             && dupe_ids.contains(&word_id)
                             && !slot_states[other_slot_id].eliminations.contains(&word_id)

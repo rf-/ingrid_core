@@ -436,7 +436,7 @@ pub fn generate_slot_options(
 ) -> SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> {
     let mut slot_options: SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> = smallvec![];
 
-    for slot in slot_configs.iter() {
+    for slot in slot_configs {
         let entry_fill = slot.fill(fill, grid_width);
 
         // If the slot is fully specified, we need to either use an existing word or create a new
