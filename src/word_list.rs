@@ -91,8 +91,8 @@ pub struct WordList {
     /// A dupe index reflecting the max substring length provided when configuring the WordList.
     pub dupe_index: BoxedDupeIndex,
 
-    /// The maximum word length provided when configuring the WordList.
-    pub max_length: usize,
+    /// The maximum word length provided when configuring the WordList, if any.
+    pub max_length: Option<usize>,
 
     /// Callback run after adding or removing words.
     pub on_update: Option<OnUpdateCallback>,
@@ -209,18 +209,10 @@ impl WordList {
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
     ) -> WordList {
-        let max_length = max_length.unwrap_or_else(|| {
-            raw_word_list
-                .iter()
-                .map(|entry| entry.length)
-                .max()
-                .unwrap_or(0)
-        });
-
         let mut instance = WordList {
             glyphs: smallvec![],
             glyph_id_by_char: HashMap::new(),
-            words: (0..=max_length).map(|_| vec![]).collect(),
+            words: vec![vec![]],
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             max_length,
@@ -315,9 +307,11 @@ impl WordList {
     pub fn replace_list(
         &mut self,
         raw_word_list: &[RawWordListEntry],
-        max_length: usize,
+        max_length: Option<usize>,
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>) {
+        self.max_length = max_length;
+
         // Start with the assumption that we're removing everything.
         let mut removed_words_set: HashSet<GlobalWordId> = self
             .words
@@ -331,17 +325,20 @@ impl WordList {
         let mut added_any_words = false;
         let silent = silent || self.on_update.is_none();
 
-        // If we're expanding our previous max length, make sure the `words` vec has enough entries.
-        while self.words.len() < max_length + 1 {
-            self.words.push(vec![]);
+        // If we were given a max length, make sure we have that many buckets.
+        if let Some(max_length) = max_length {
+            while self.words.len() < max_length + 1 {
+                self.words.push(vec![]);
+            }
         }
-        self.max_length = max_length;
 
         // Now go through our new words and add them.
         for raw_entry in raw_word_list {
             let word_length = raw_entry.length;
-            if word_length > max_length {
-                continue;
+            if let Some(max_length) = max_length {
+                if word_length > max_length {
+                    continue;
+                }
             }
 
             let existing_word_id = self.word_id_by_string.get(&raw_entry.normalized);
@@ -479,7 +476,7 @@ pub mod tests {
     fn test_loads_words_up_to_max_length() {
         let word_list = WordList::from_dict_file(dictionary_path(), Some(5), None).unwrap();
 
-        assert_eq!(word_list.max_length, 5);
+        assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 6);
 
         let &word_id = word_list
@@ -509,7 +506,6 @@ pub mod tests {
             None,
         );
 
-        assert_eq!(word_list.max_length, 7);
         assert_eq!(
             word_list
                 .words
