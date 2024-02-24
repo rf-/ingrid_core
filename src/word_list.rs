@@ -68,7 +68,6 @@ pub fn normalize_word(canonical: &str) -> String {
 #[derive(Debug)]
 pub enum WordListError {
     InvalidPath(String),
-    InvalidLine(String),
     InvalidWord(String),
     InvalidScore(String),
 }
@@ -76,15 +75,12 @@ pub enum WordListError {
 impl fmt::Display for WordListError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let string = match self {
-            WordListError::InvalidPath(path) => format!("Can't read path: {path}"),
-            WordListError::InvalidLine(line) => {
-                format!("Word list contains invalid line: '{line}'")
-            }
+            WordListError::InvalidPath(path) => format!("Can't read file: \"{path}\""),
             WordListError::InvalidWord(word) => {
-                format!("Word list contains invalid word: '{word}'")
+                format!("Word list contains invalid word: \"{word}\"")
             }
             WordListError::InvalidScore(score) => {
-                format!("Word list contains invalid score: '{score}'")
+                format!("Word list contains invalid score: \"{score}\"")
             }
         };
         write!(f, "{string}")
@@ -130,11 +126,7 @@ fn parse_word_list_file_contents(
                 return None;
             }
 
-            let line_parts: Vec<_> = line.trim().split(';').collect();
-            if line_parts.len() < 2 {
-                errors.push(WordListError::InvalidLine(line.into()));
-                return Some(None);
-            }
+            let line_parts: Vec<_> = line.split(';').collect();
 
             let canonical = line_parts[0].trim().to_string();
             let normalized: String = normalize_word(&canonical);
@@ -143,7 +135,13 @@ fn parse_word_list_file_contents(
                 return Some(None);
             }
 
-            let Ok(score) = line_parts[1].trim().parse::<i32>() else {
+            let Ok(score) = (
+                if line_parts.len() < 2 {
+                    Ok(50)
+                } else {
+                    line_parts[1].trim().parse::<i32>()
+                }
+            ) else {
                 errors.push(WordListError::InvalidScore(line_parts[1].into()));
                 return Some(None);
             };
@@ -193,7 +191,7 @@ fn load_words_from_source(
             if let Ok(contents) = fs::read_to_string(path) {
                 parse_word_list_file_contents(&contents, &mut errors)
             } else {
-                errors.push(WordListError::InvalidPath(format!("{path:?}")));
+                errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
             }
         }

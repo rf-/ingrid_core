@@ -77,7 +77,7 @@ fn main() -> Result<(), Error> {
         ));
     }
 
-    let (word_list, _word_list_errors) = WordList::new(
+    let (word_list, word_list_errors) = WordList::new(
         &[match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
                 id: 0,
@@ -92,8 +92,20 @@ fn main() -> Result<(), Error> {
         args.max_shared_substring,
     );
 
+    if let Some(errors) = word_list_errors.into_values().next() {
+        return if errors.len() == 1 {
+            Err(Error(format!("{}", errors[0])))
+        } else {
+            let mut full_error: String = "".into();
+            for error in errors {
+                full_error.push_str(&format!("\n- {error}"));
+            }
+            Err(Error(full_error))
+        };
+    }
+
     if word_list.word_id_by_string.is_empty() {
-        return Err(Error("Wordlist is empty".into()));
+        return Err(Error("Word list is empty".into()));
     }
 
     let grid_config = generate_grid_config_from_template_string(
