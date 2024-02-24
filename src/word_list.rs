@@ -135,13 +135,11 @@ fn parse_word_list_file_contents(
                 return Some(None);
             }
 
-            let Ok(score) = (
-                if line_parts.len() < 2 {
-                    Ok(50)
-                } else {
-                    line_parts[1].trim().parse::<i32>()
-                }
-            ) else {
+            let Ok(score) = (if line_parts.len() < 2 {
+                Ok(50)
+            } else {
+                line_parts[1].trim().parse::<i32>()
+            }) else {
                 errors.push(WordListError::InvalidScore(line_parts[1].into()));
                 return Some(None);
             };
