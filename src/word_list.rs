@@ -1,8 +1,9 @@
 use lazy_static::lazy_static;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fmt::Debug;
-use std::path::Path;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{fmt, fs};
 use unicode_normalization::UnicodeNormalization;
 
@@ -64,6 +65,179 @@ pub fn normalize_word(canonical: &str) -> String {
         .collect()
 }
 
+#[derive(Debug)]
+pub enum WordListError {
+    InvalidPath(String),
+    InvalidLine(String),
+    InvalidWord(String),
+    InvalidScore(String),
+}
+
+impl fmt::Display for WordListError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let string = match self {
+            WordListError::InvalidPath(path) => format!("Can't read path: {path}"),
+            WordListError::InvalidLine(line) => {
+                format!("Word list contains invalid line: '{line}'")
+            }
+            WordListError::InvalidWord(word) => {
+                format!("Word list contains invalid word: '{word}'")
+            }
+            WordListError::InvalidScore(score) => {
+                format!("Word list contains invalid score: '{score}'")
+            }
+        };
+        write!(f, "{string}")
+    }
+}
+
+/// Configuration describing a source of wordlist entries.
+pub enum WordListSourceConfig<'a> {
+    Memory {
+        id: usize,
+        words: &'a [(String, i32)],
+    },
+    File {
+        id: usize,
+        path: OsString,
+    },
+    FileContents {
+        id: usize,
+        contents: &'a str,
+    },
+}
+
+/// `WordListErrors` keyed by the `id` of the relevant source.
+pub type WordListSourceErrors = HashMap<usize, Vec<WordListError>>;
+
+/// A single word list entry.
+#[allow(dead_code)]
+struct RawWordListEntry {
+    pub length: usize,
+    pub normalized: String,
+    pub canonical: String,
+    pub score: i32,
+}
+
+fn parse_word_list_file_contents(
+    file_contents: &str,
+    errors: &mut Vec<WordListError>,
+) -> Vec<RawWordListEntry> {
+    file_contents
+        .lines()
+        .map_while(|line| {
+            if errors.len() > 100 {
+                return None;
+            }
+
+            let line_parts: Vec<_> = line.trim().split(';').collect();
+            if line_parts.len() < 2 {
+                errors.push(WordListError::InvalidLine(line.into()));
+                return Some(None);
+            }
+
+            let canonical = line_parts[0].trim().to_string();
+            let normalized: String = normalize_word(&canonical);
+            if normalized.is_empty() {
+                errors.push(WordListError::InvalidWord(line_parts[0].into()));
+                return Some(None);
+            }
+
+            let Ok(score) = line_parts[1].trim().parse::<i32>() else {
+                errors.push(WordListError::InvalidScore(line_parts[1].into()));
+                return Some(None);
+            };
+
+            Some(Some(RawWordListEntry {
+                length: normalized.chars().count(),
+                normalized,
+                canonical,
+                score,
+            }))
+        })
+        .flatten()
+        .collect()
+}
+
+fn load_words_from_source(
+    source: &WordListSourceConfig,
+    all_errors: &mut WordListSourceErrors,
+) -> Vec<RawWordListEntry> {
+    let source_id;
+    let mut errors = vec![];
+    let entries = match source {
+        WordListSourceConfig::Memory { id, words, .. } => {
+            source_id = id;
+            words
+                .iter()
+                .cloned()
+                .filter_map(|(canonical, score)| {
+                    let normalized: String = normalize_word(&canonical);
+                    if normalized.is_empty() {
+                        errors.push(WordListError::InvalidWord(canonical));
+                        return None;
+                    }
+
+                    Some(RawWordListEntry {
+                        length: normalized.chars().count(),
+                        normalized,
+                        canonical,
+                        score,
+                    })
+                })
+                .collect()
+        }
+
+        WordListSourceConfig::File { id, path, .. } => {
+            source_id = id;
+            if let Ok(contents) = fs::read_to_string(path) {
+                parse_word_list_file_contents(&contents, &mut errors)
+            } else {
+                errors.push(WordListError::InvalidPath(format!("{path:?}")));
+                vec![]
+            }
+        }
+
+        WordListSourceConfig::FileContents { id, contents, .. } => {
+            source_id = id;
+            parse_word_list_file_contents(contents, &mut errors)
+        }
+    };
+
+    if !errors.is_empty() {
+        all_errors.insert(*source_id, errors);
+    }
+
+    entries
+}
+
+fn load_words_from_sources(
+    sources: &[WordListSourceConfig],
+) -> (Vec<RawWordListEntry>, WordListSourceErrors) {
+    fn hash_str(str: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        str.hash(&mut hasher);
+        hasher.finish()
+    }
+    let mut seen_words: HashSet<u64> = HashSet::new();
+
+    let mut result = vec![];
+    let mut errors = HashMap::new();
+
+    for source in sources {
+        for word in load_words_from_source(source, &mut errors) {
+            let hash = hash_str(&word.normalized);
+            if seen_words.contains(&hash) {
+                continue;
+            }
+            result.push(word);
+            seen_words.insert(hash);
+        }
+    }
+
+    (result, errors)
+}
+
 type OnUpdateCallback =
     Box<dyn FnMut(&mut WordList, &[GlobalWordId], &[GlobalWordId]) + Send + Sync>;
 
@@ -98,117 +272,16 @@ pub struct WordList {
     pub on_update: Option<OnUpdateCallback>,
 }
 
-/// A single word list entry, as provided when instantiating or updating `WordList`.
-#[allow(dead_code)]
-pub struct RawWordListEntry {
-    pub length: usize,
-    pub normalized: String,
-    pub canonical: String,
-    pub score: i32,
-}
-
-impl RawWordListEntry {
-    #[must_use]
-    pub fn new(canonical: String, score: i32) -> RawWordListEntry {
-        let normalized = normalize_word(&canonical);
-        RawWordListEntry {
-            length: normalized.chars().count(),
-            normalized,
-            canonical,
-            score,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum WordListError {
-    InvalidPath(String),
-    InvalidLine(String),
-    InvalidWord(String),
-    InvalidScore(String),
-}
-
-impl fmt::Display for WordListError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let string = match self {
-            WordListError::InvalidPath(path) => format!("Can't read path: {path}"),
-            WordListError::InvalidLine(line) => {
-                format!("Word list contains invalid line: '{line}'")
-            }
-            WordListError::InvalidWord(word) => {
-                format!("Word list contains invalid word: '{word}'")
-            }
-            WordListError::InvalidScore(score) => {
-                format!("Word list contains invalid score: '{score}'")
-            }
-        };
-        write!(f, "{string}")
-    }
-}
-
 impl WordList {
-    /// Instantiate a `WordList` based on the given `.dict` file. Convenience wrapper
-    /// around `load_dict_file` and `new`.
-    pub fn from_dict_file<P: AsRef<Path>>(
-        path: P,
-        max_length: Option<usize>,
-        max_shared_substring: Option<usize>,
-    ) -> Result<WordList, WordListError> {
-        Ok(WordList::new(
-            &WordList::load_dict_file(&path)?,
-            max_length,
-            max_shared_substring,
-        ))
-    }
-
-    /// Parse the given `.dict` file contents into `RawWordListEntry` structs, if possible.
-    pub fn parse_dict_file(file_contents: &str) -> Result<Vec<RawWordListEntry>, WordListError> {
-        file_contents
-            .lines()
-            .map(|line| {
-                let line_parts: Vec<_> = line.trim().split(';').collect();
-                if line_parts.len() != 2 {
-                    return Err(WordListError::InvalidLine(line.into()));
-                }
-
-                let canonical = line_parts[0].trim().to_string();
-                let normalized: String = normalize_word(&canonical);
-                if normalized.is_empty() {
-                    return Err(WordListError::InvalidWord(line_parts[0].into()));
-                }
-
-                let Ok(score) = line_parts[1].trim().parse::<i32>() else {
-                    return Err(WordListError::InvalidScore(line_parts[1].into()));
-                };
-
-                Ok(RawWordListEntry {
-                    length: normalized.chars().count(),
-                    normalized,
-                    canonical,
-                    score,
-                })
-            })
-            .collect()
-    }
-
-    /// Load the contents of the given `.dict` file into `RawWordListEntry` structs, if possible.
-    pub fn load_dict_file<P: AsRef<Path>>(path: P) -> Result<Vec<RawWordListEntry>, WordListError> {
-        let Ok(file_contents) = fs::read_to_string(&path) else {
-            return Err(WordListError::InvalidPath(format!("{:?}", path.as_ref())));
-        };
-
-        WordList::parse_dict_file(&file_contents)
-    }
-
-    /// Construct a new `WordList` containing the given entries (omitting any that are longer than
+    /// Construct a new `WordList` using the given sources (omitting any entries that are longer than
     /// `max_length`).
     #[allow(dead_code)]
     #[must_use]
     pub fn new(
-        raw_word_list: &[RawWordListEntry],
+        source_configs: &[WordListSourceConfig],
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
-    ) -> WordList {
+    ) -> (WordList, WordListSourceErrors) {
         let mut instance = WordList {
             glyphs: smallvec![],
             glyph_id_by_char: HashMap::new(),
@@ -219,9 +292,10 @@ impl WordList {
             on_update: None,
         };
 
-        instance.replace_list(raw_word_list, max_length, false);
+        let (_added_words, _removed_words, source_errors) =
+            instance.replace_list(source_configs, max_length, false);
 
-        instance
+        (instance, source_errors)
     }
 
     /// If the given normalized word is already in the list, return its id; if not, add it as a
@@ -231,24 +305,22 @@ impl WordList {
             .get(normalized_word)
             .copied()
             .map_or_else(
-                || {
-                    self.add_word(
-                        &RawWordListEntry {
-                            length: normalized_word.chars().count(),
-                            normalized: normalized_word.to_string(),
-                            canonical: normalized_word.to_string(),
-                            score: 0,
-                        },
-                        true,
-                    )
-                },
+                || self.add_hidden_word(normalized_word),
                 |word_id| (normalized_word.chars().count(), word_id),
             )
     }
 
-    /// Add the given word to the list and trigger the update callback. The word must not be part of the list yet.
-    pub fn add_word(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
-        let global_word_id = self.add_word_silent(raw_entry, hidden);
+    /// Add the given word to the list as a hidden entry and trigger the update callback. The word must not be part of the list yet.
+    pub fn add_hidden_word(&mut self, normalized_word: &str) -> GlobalWordId {
+        let global_word_id = self.add_word_silent(
+            &RawWordListEntry {
+                length: normalized_word.chars().count(),
+                normalized: normalized_word.to_string(),
+                canonical: normalized_word.to_string(),
+                score: 0,
+            },
+            true,
+        );
 
         if let Some(mut on_update) = self.on_update.take() {
             on_update(self, &[global_word_id], &[]);
@@ -306,10 +378,10 @@ impl WordList {
     /// removed words and pass them into the callback.
     pub fn replace_list(
         &mut self,
-        raw_word_list: &[RawWordListEntry],
+        source_configs: &[WordListSourceConfig],
         max_length: Option<usize>,
         silent: bool,
-    ) -> (bool, HashSet<GlobalWordId>) {
+    ) -> (bool, HashSet<GlobalWordId>, WordListSourceErrors) {
         self.max_length = max_length;
 
         // Start with the assumption that we're removing everything.
@@ -332,8 +404,10 @@ impl WordList {
             }
         }
 
+        let (raw_entries, source_errors) = load_words_from_sources(source_configs);
+
         // Now go through our new words and add them.
-        for raw_entry in raw_word_list {
+        for raw_entry in raw_entries {
             let word_length = raw_entry.length;
             if let Some(max_length) = max_length {
                 if word_length > max_length {
@@ -351,11 +425,11 @@ impl WordList {
                 removed_words_set.remove(&(word_length, existing_word_id));
             } else if !silent {
                 added_any_words = true;
-                let added_word_id = self.add_word_silent(raw_entry, false);
+                let added_word_id = self.add_word_silent(&raw_entry, false);
                 added_words.push(added_word_id);
             } else {
                 added_any_words = true;
-                self.add_word_silent(raw_entry, false);
+                self.add_word_silent(&raw_entry, false);
             }
         }
 
@@ -373,12 +447,12 @@ impl WordList {
             self.on_update = Some(on_update);
         }
 
-        (added_any_words, removed_words_set)
+        (added_any_words, removed_words_set, source_errors)
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
-    /// every letter up front, because word list entries may also contain numbers or non-English
-    /// letters.
+    /// every letter up front, because word list entries may also contain numbers, non-English
+    /// letters, or punctuation.
     pub fn glyph_id_for_char(&mut self, ch: char) -> GlyphId {
         self.glyph_id_by_char.get(&ch).copied().unwrap_or_else(|| {
             self.glyphs.push(ch);
@@ -455,7 +529,7 @@ impl Debug for WordList {
 pub mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
     use crate::types::GlobalWordId;
-    use crate::word_list::{RawWordListEntry, WordList};
+    use crate::word_list::{WordList, WordListSourceConfig};
     use std::path;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -470,11 +544,20 @@ pub mod tests {
         path
     }
 
+    #[must_use]
+    pub fn word_list_source_config() -> Vec<WordListSourceConfig<'static>> {
+        vec![WordListSourceConfig::File {
+            id: 0,
+            path: dictionary_path().into(),
+        }]
+    }
+
     #[test]
     #[allow(clippy::bool_assert_comparison)]
     #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
-        let word_list = WordList::from_dict_file(dictionary_path(), Some(5), None).unwrap();
+        let (word_list, _word_list_errors) =
+            WordList::new(&word_list_source_config(), Some(5), None);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 6);
@@ -495,13 +578,16 @@ pub mod tests {
 
     #[test]
     fn test_unusual_characters() {
-        let word_list = WordList::new(
-            &[
-                // Non-English character expressed as one two-byte `char`
-                RawWordListEntry::new("monsutâ".into(), 50),
-                // Non-English character expressed as two chars w/ combining form
-                RawWordListEntry::new("hélen".into(), 50),
-            ],
+        let (word_list, _word_list_errors) = WordList::new(
+            &[WordListSourceConfig::Memory {
+                id: 0,
+                words: &[
+                    // Non-English character expressed as one two-byte `char`
+                    ("monsutâ".into(), 50),
+                    // Non-English character expressed as two chars w/ combining form
+                    ("hélen".into(), 50),
+                ],
+            }],
             None,
             None,
         );
@@ -518,7 +604,7 @@ pub mod tests {
 
     #[test]
     fn test_soft_dupe_index() {
-        let mut word_list = WordList::new(&[], Some(6), Some(5));
+        let (mut word_list, _word_list_errors) = WordList::new(&[], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
 
         // This doesn't do anything except make sure it's OK to call this method unboxed
@@ -540,11 +626,22 @@ pub mod tests {
             ))
         };
 
-        let golf_id = word_list.add_word(&RawWordListEntry::new("golf".into(), 0), false);
+        word_list.replace_list(
+            &[WordListSourceConfig::Memory {
+                id: 0,
+                words: &[
+                    ("golf".into(), 0),
+                    ("golfy".into(), 0),
+                    ("golves".into(), 0),
+                ],
+            }],
+            None,
+            false,
+        );
 
-        let golfy_id = word_list.add_word(&RawWordListEntry::new("golfy".into(), 0), false);
-
-        let golves_id = word_list.add_word(&RawWordListEntry::new("golves".into(), 0), false);
+        let golf_id = (4, *word_list.word_id_by_string.get("golf").unwrap());
+        let golfy_id = (5, *word_list.word_id_by_string.get("golfy").unwrap());
+        let golves_id = (6, *word_list.word_id_by_string.get("golves").unwrap());
 
         let is_dupe = |index: &dyn AnyDupeIndex, id_1: GlobalWordId, id_2: GlobalWordId| {
             index

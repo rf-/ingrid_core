@@ -807,15 +807,20 @@ mod tests {
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
     use crate::types::GlobalWordId;
-    use crate::word_list::tests::dictionary_path;
-    use crate::word_list::{RawWordListEntry, WordList};
+    use crate::word_list::tests::{dictionary_path, word_list_source_config};
+    use crate::word_list::{WordList, WordListSourceConfig};
     use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     fn load_word_list(max_length: usize) -> WordList {
-        WordList::from_dict_file(&dictionary_path(), Some(max_length), Some(5)).unwrap()
+        let (word_list, word_list_errors) =
+            WordList::new(&word_list_source_config(), Some(max_length), Some(5));
+        if !word_list_errors.is_empty() {
+            panic!("load_word_list: failed to load: {word_list_errors:?}");
+        }
+        word_list
     }
 
     fn generate_config_with_min_score(template: &str, min_score: f32) -> OwnedGridConfig {
@@ -1221,11 +1226,20 @@ mod tests {
             "
         .trim();
 
-        let mut raw_word_list = WordList::load_dict_file(&dictionary_path()).unwrap();
-        raw_word_list.insert(0, RawWordListEntry::new("monsutâ".into(), 50));
-        raw_word_list.insert(0, RawWordListEntry::new("âbc".into(), 50));
-
-        let word_list = WordList::new(&raw_word_list, Some(7), None);
+        let (word_list, _word_list_errors) = WordList::new(
+            &[
+                WordListSourceConfig::Memory {
+                    id: 0,
+                    words: &[("monsutâ".into(), 50), ("âbc".into(), 50)],
+                },
+                WordListSourceConfig::File {
+                    id: 1,
+                    path: dictionary_path().into(),
+                },
+            ],
+            Some(7),
+            None,
+        );
 
         let grid_config = generate_grid_config_from_template_string(word_list, template, 40.0);
 

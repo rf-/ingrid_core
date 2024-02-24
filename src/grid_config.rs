@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::{GlyphId, WordId};
 use crate::util::build_glyph_counts_by_cell;
-use crate::word_list::{RawWordListEntry, WordList};
+use crate::word_list::WordList;
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// An identifier for the intersection between two slots; these correspond one-to-one with checked
@@ -445,30 +445,14 @@ pub fn generate_slot_options(
             entry_fill.iter().copied().collect();
 
         if let Some(complete_fill) = complete_fill {
-            // Look for an existing word matching the slot's fill. Note that we don't care whether
-            // it's hidden here, because slots can be manually filled with words that shouldn't be
-            // available for autofill purposes (e.g. theme entries).
-            let existing_word_entry = word_list.words[slot.length]
+            let word_string: String = complete_fill
                 .iter()
-                .enumerate()
-                .find(|(_, word)| word.glyphs == complete_fill);
+                .map(|&glyph_id| word_list.glyphs[glyph_id])
+                .collect();
 
-            if let Some((existing_word_id, _)) = existing_word_entry {
-                slot_options.push(vec![existing_word_id]);
-            } else {
-                let word_string: String = complete_fill
-                    .iter()
-                    .map(|&glyph_id| word_list.glyphs[glyph_id])
-                    .collect();
+            let (_word_length, word_id) = word_list.get_word_id_or_add_hidden(&word_string);
 
-                let (_new_word_length, new_word_id) =
-                    word_list.add_word(&RawWordListEntry::new(word_string, 0), true);
-
-                #[cfg(feature = "check_invariants")]
-                assert_eq!(complete_fill.len(), _new_word_length);
-
-                slot_options.push(vec![new_word_id]);
-            }
+            slot_options.push(vec![word_id]);
         } else {
             let options: Vec<WordId> = (0..word_list.words[slot.length].len())
                 .filter(|&word_id| {

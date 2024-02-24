@@ -1,7 +1,7 @@
 use clap::Parser;
 use ingrid_core::backtracking_search::find_fill;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
-use ingrid_core::word_list::WordList;
+use ingrid_core::word_list::{WordList, WordListSourceConfig};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
@@ -77,17 +77,20 @@ fn main() -> Result<(), Error> {
         ));
     }
 
-    let word_list = match args.wordlist {
-        Some(wordlist_path) => {
-            WordList::from_dict_file(wordlist_path, Some(max_side), args.max_shared_substring)
-                .map_err(|err| Error(err.to_string()))?
-        }
-        None => WordList::new(
-            &WordList::parse_dict_file(STWL_RAW).unwrap(),
-            Some(max_side),
-            args.max_shared_substring,
-        ),
-    };
+    let (word_list, _word_list_errors) = WordList::new(
+        &[match args.wordlist {
+            Some(wordlist_path) => WordListSourceConfig::File {
+                id: 0,
+                path: wordlist_path.into(),
+            },
+            None => WordListSourceConfig::FileContents {
+                id: 0,
+                contents: STWL_RAW,
+            },
+        }],
+        Some(max_side),
+        args.max_shared_substring,
+    );
 
     if word_list.word_id_by_string.is_empty() {
         return Err(Error("Wordlist is empty".into()));
