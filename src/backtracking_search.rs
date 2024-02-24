@@ -116,9 +116,10 @@ impl Slot {
         blamed_slot_id: Option<SlotId>,
     ) {
         #[cfg(feature = "check_invariants")]
-        if self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some() {
-            panic!("Editing eliminations for a fixed slot?");
-        }
+        assert!(
+            self.fixed_word_id.is_none() && self.fixed_glyph_counts_by_cell.is_none(),
+            "Editing eliminations for a fixed slot?"
+        );
 
         self.eliminations[word_id] = Some(blamed_slot_id);
         self.remaining_option_count -= 1;
@@ -132,9 +133,10 @@ impl Slot {
     /// Record that a word is now available again for this slot.
     fn remove_elimination(&mut self, config: &GridConfig, word_id: WordId) {
         #[cfg(feature = "check_invariants")]
-        if self.fixed_word_id.is_some() || self.fixed_glyph_counts_by_cell.is_some() {
-            panic!("Editing eliminations for a fixed slot?");
-        }
+        assert!(
+            self.fixed_word_id.is_none() && self.fixed_glyph_counts_by_cell.is_none(),
+            "Editing eliminations for a fixed slot?"
+        );
 
         self.eliminations[word_id] = None;
         self.remaining_option_count += 1;
@@ -308,14 +310,13 @@ fn maintain_arc_consistency(
                         .take(2)
                         .collect::<Vec<_>>();
 
-                    if first_two.len() == 1 {
-                        return Some(first_two[0]);
-                    } else {
-                        panic!(
-                            "get_single_option: called with slot that had {} options",
-                            first_two.len()
-                        );
-                    }
+                    assert_eq!(
+                        first_two.len(),
+                        1,
+                        "get_single_option: called with slot that had multiple options",
+                    );
+
+                    Some(first_two[0])
                 }
 
                 #[cfg(not(feature = "check_invariants"))]
@@ -817,9 +818,10 @@ mod tests {
     fn load_word_list(max_length: usize) -> WordList {
         let (word_list, word_list_errors) =
             WordList::new(&word_list_source_config(), Some(max_length), Some(5));
-        if !word_list_errors.is_empty() {
-            panic!("load_word_list: failed to load: {word_list_errors:?}");
-        }
+        assert!(
+            word_list_errors.is_empty(),
+            "load_word_list: failed to load: {word_list_errors:?}"
+        );
         word_list
     }
 
@@ -1182,7 +1184,7 @@ mod tests {
         let get_id = |word_list: &WordList, word_str: &str| -> GlobalWordId {
             (
                 word_str.len(),
-                *word_list.word_id_by_string.get(word_str.into()).unwrap(),
+                *word_list.word_id_by_string.get(word_str).unwrap(),
             )
         };
 
