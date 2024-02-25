@@ -318,6 +318,12 @@ impl WordList {
             )
     }
 
+    /// Borrow an existing word using its global id.
+    #[must_use]
+    pub fn get_word(&self, global_word_id: GlobalWordId) -> &Word {
+        &self.words[global_word_id.0][global_word_id.1]
+    }
+
     /// Add the given word to the list as a hidden entry and trigger the update callback. The word must not be part of the list yet.
     pub fn add_hidden_word(&mut self, normalized_word: &str) -> GlobalWordId {
         let global_word_id = self.add_word_silent(
@@ -596,10 +602,39 @@ pub mod tests {
         assert_eq!(word.score, 50.0);
         assert_eq!(word.hidden, false);
 
-        assert!(matches!(word_list.word_id_by_string.get("skates"), None));
+        assert!(word_list.word_id_by_string.get("skates").is_none());
     }
 
     #[test]
+    #[allow(clippy::bool_assert_comparison)]
+    fn test_dynamic_max_length() {
+        let (mut word_list, _word_list_errors) =
+            WordList::new(&word_list_source_config(), None, None);
+
+        assert_eq!(word_list.max_length, None);
+        assert_eq!(word_list.words.len(), 16);
+
+        let &word_id = word_list
+            .word_id_by_string
+            .get("skates")
+            .expect("word list should include 'skates'");
+
+        let word = &word_list.words[6][word_id];
+        assert_eq!(word.hidden, false);
+        assert_eq!(word.source_index, Some(0));
+
+        word_list.replace_list(&word_list_source_config(), Some(5), false);
+
+        assert_eq!(word_list.max_length, Some(5));
+        assert_eq!(word_list.words.len(), 16);
+
+        let word = &word_list.words[6][word_id];
+        assert_eq!(word.hidden, true);
+        assert_eq!(word.source_index, None);
+    }
+
+    #[test]
+    #[allow(clippy::unicode_not_nfc)]
     fn test_unusual_characters() {
         let (word_list, _word_list_errors) = WordList::new(
             &[WordListSourceConfig::Memory {
@@ -616,16 +651,13 @@ pub mod tests {
         );
 
         assert_eq!(
-            word_list
-                .words
-                .iter()
-                .map(|bucket| bucket.len())
-                .collect::<Vec<_>>(),
+            word_list.words.iter().map(Vec::len).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 1, 0, 1]
         );
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn test_soft_dupe_index() {
         let (mut word_list, _word_list_errors) = WordList::new(&[], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
@@ -708,5 +740,144 @@ pub mod tests {
         // Remove custom pair and check again
         soft_dupe_index.remove_dupe_pair(golf_id, golves_id);
         assert_not_dupe(&*soft_dupe_index, golf_id, golves_id);
+    }
+
+    #[test]
+    #[allow(clippy::bool_assert_comparison)]
+    #[allow(clippy::float_cmp)]
+    #[allow(clippy::too_many_lines)]
+    fn test_source_management() {
+        let (mut word_list, word_list_errors) = WordList::new(
+            &[
+                WordListSourceConfig::Memory {
+                    id: 0,
+                    words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
+                },
+                WordListSourceConfig::File {
+                    id: 1,
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        assert!(word_list_errors.is_empty());
+
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+        let wolvvves_id = word_list.get_word_id_or_add_hidden("wolvvves");
+        let wharves_id = word_list.get_word_id_or_add_hidden("wharves");
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 70.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+        }
+        {
+            let wolvvves = word_list.get_word(wolvvves_id);
+            assert_eq!(wolvvves.score, 71.0);
+            assert_eq!(wolvvves.hidden, false);
+            assert_eq!(wolvvves.source_index, Some(0));
+        }
+        {
+            let wharves = word_list.get_word(wharves_id);
+            assert_eq!(wharves.score, 50.0);
+            assert_eq!(wharves.hidden, false);
+            assert_eq!(wharves.source_index, Some(1));
+        }
+
+        word_list.optimistically_update_word("wolves", 72, 0);
+        word_list.optimistically_update_word("wharves", 73, 0);
+        word_list.optimistically_update_word("worfs", 74, 0);
+
+        let worfs_id = word_list.get_word_id_or_add_hidden("worfs");
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 72.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+        }
+        {
+            let wharves = word_list.get_word(wharves_id);
+            assert_eq!(wharves.score, 73.0);
+            assert_eq!(wharves.hidden, false);
+            assert_eq!(wharves.source_index, Some(0));
+        }
+        {
+            let worfs = word_list.get_word(worfs_id);
+            assert_eq!(worfs.score, 74.0);
+            assert_eq!(worfs.hidden, false);
+            assert_eq!(worfs.source_index, Some(0));
+        }
+
+        word_list.replace_list(
+            &[
+                WordListSourceConfig::File {
+                    id: 1,
+                    path: dictionary_path().into(),
+                },
+                WordListSourceConfig::Memory {
+                    id: 0,
+                    words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
+                },
+            ],
+            None,
+            false,
+        );
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+        }
+        {
+            let wolvvves = word_list.get_word(wolvvves_id);
+            assert_eq!(wolvvves.score, 71.0);
+            assert_eq!(wolvvves.hidden, false);
+            assert_eq!(wolvvves.source_index, Some(1));
+        }
+        {
+            let wharves = word_list.get_word(wharves_id);
+            assert_eq!(wharves.score, 50.0);
+            assert_eq!(wharves.hidden, false);
+            assert_eq!(wharves.source_index, Some(0));
+        }
+        {
+            let worfs = word_list.get_word(worfs_id);
+            assert_eq!(worfs.hidden, true);
+            assert_eq!(worfs.source_index, None);
+        }
+
+        word_list.optimistically_update_word("wolves", 80, 1);
+        word_list.optimistically_update_word("wolvvves", 81, 1);
+        word_list.optimistically_update_word("wharves", 82, 1);
+        word_list.optimistically_update_word("worfs", 83, 1);
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+        }
+        {
+            let wolvvves = word_list.get_word(wolvvves_id);
+            assert_eq!(wolvvves.score, 81.0);
+            assert_eq!(wolvvves.hidden, false);
+            assert_eq!(wolvvves.source_index, Some(1));
+        }
+        {
+            let wharves = word_list.get_word(wharves_id);
+            assert_eq!(wharves.score, 50.0);
+            assert_eq!(wharves.hidden, false);
+            assert_eq!(wharves.source_index, Some(0));
+        }
+        {
+            let worfs = word_list.get_word(worfs_id);
+            assert_eq!(worfs.score, 83.0);
+            assert_eq!(worfs.hidden, false);
+            assert_eq!(worfs.source_index, Some(1));
+        }
     }
 }
