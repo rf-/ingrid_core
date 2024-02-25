@@ -136,7 +136,7 @@ fn parse_word_list_file_contents(
             let line_parts: Vec<_> = line.split(';').collect();
 
             let canonical = line_parts[0].trim().to_string();
-            let normalized: String = normalize_word(&canonical);
+            let normalized = normalize_word(&canonical);
             if normalized.is_empty() {
                 errors.push(WordListError::InvalidWord(line_parts[0].into()));
                 return Some(None);
@@ -177,7 +177,7 @@ fn load_words_from_source(
                 .iter()
                 .cloned()
                 .filter_map(|(canonical, score)| {
-                    let normalized: String = normalize_word(&canonical);
+                    let normalized = normalize_word(&canonical);
                     if normalized.is_empty() {
                         errors.push(WordListError::InvalidWord(canonical));
                         return None;
@@ -520,6 +520,26 @@ impl WordList {
         }
         for &(length, word_id) in words {
             index.add_word(word_id, &self.words[length][word_id]);
+        }
+    }
+
+    pub fn optimistically_update_word(&mut self, canonical: &str, score: i32, source_index: u16) {
+        let normalized = normalize_word(canonical);
+        if normalized.is_empty() {
+            return;
+        }
+
+        let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
+        let word = &mut self.words[length][word_id];
+        let should_update = word
+            .source_index
+            .map_or(true, |existing_index| source_index <= existing_index);
+
+        if should_update {
+            word.canonical_string = canonical.into();
+            word.score = score as f32;
+            word.hidden = false;
+            word.source_index = Some(source_index);
         }
     }
 }
