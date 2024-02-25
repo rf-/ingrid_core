@@ -52,6 +52,11 @@ pub struct Word {
     /// Is this word currently available for autofill? This will be false for non-words that are
     /// part of an input grid or for words that have been "removed" from the list dynamically.
     pub hidden: bool,
+
+    /// If the word is currently not hidden, what is the index of the source that it came from? If
+    /// the same word appears in multiple sources, this will be the highest-priority (i.e., lowest)
+    /// one.
+    pub source_index: Option<u16>,
 }
 
 /// Given a canonical word string from a dictionary file, turn it into the normalized form we'll
@@ -113,10 +118,12 @@ struct RawWordListEntry {
     pub normalized: String,
     pub canonical: String,
     pub score: i32,
+    pub source_index: Option<u16>,
 }
 
 fn parse_word_list_file_contents(
     file_contents: &str,
+    source_index: u16,
     errors: &mut Vec<WordListError>,
 ) -> Vec<RawWordListEntry> {
     file_contents
@@ -149,6 +156,7 @@ fn parse_word_list_file_contents(
                 normalized,
                 canonical,
                 score,
+                source_index: Some(source_index),
             }))
         })
         .flatten()
@@ -157,6 +165,7 @@ fn parse_word_list_file_contents(
 
 fn load_words_from_source(
     source: &WordListSourceConfig,
+    source_index: u16,
     all_errors: &mut WordListSourceErrors,
 ) -> Vec<RawWordListEntry> {
     let source_id;
@@ -179,6 +188,7 @@ fn load_words_from_source(
                         normalized,
                         canonical,
                         score,
+                        source_index: Some(source_index),
                     })
                 })
                 .collect()
@@ -187,7 +197,7 @@ fn load_words_from_source(
         WordListSourceConfig::File { id, path, .. } => {
             source_id = id;
             if let Ok(contents) = fs::read_to_string(path) {
-                parse_word_list_file_contents(&contents, &mut errors)
+                parse_word_list_file_contents(&contents, source_index, &mut errors)
             } else {
                 errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
@@ -196,7 +206,7 @@ fn load_words_from_source(
 
         WordListSourceConfig::FileContents { id, contents, .. } => {
             source_id = id;
-            parse_word_list_file_contents(contents, &mut errors)
+            parse_word_list_file_contents(contents, source_index, &mut errors)
         }
     };
 
@@ -215,13 +225,15 @@ fn load_words_from_sources(
         str.hash(&mut hasher);
         hasher.finish()
     }
-    let mut seen_words: HashSet<u64> = HashSet::new();
 
+    assert!(sources.len() < 2usize.pow(16), "Too many word list sources");
+
+    let mut seen_words: HashSet<u64> = HashSet::new();
     let mut result = vec![];
     let mut errors = HashMap::new();
 
-    for source in sources {
-        for word in load_words_from_source(source, &mut errors) {
+    for (source_index, source) in sources.iter().enumerate() {
+        for word in load_words_from_source(source, source_index as u16, &mut errors) {
             let hash = hash_str(&word.normalized);
             if seen_words.contains(&hash) {
                 continue;
@@ -314,6 +326,7 @@ impl WordList {
                 normalized: normalized_word.to_string(),
                 canonical: normalized_word.to_string(),
                 score: 0,
+                source_index: None,
             },
             true,
         );
@@ -354,6 +367,7 @@ impl WordList {
                 .map(|char| LETTER_POINTS.get(&char).copied().unwrap_or(3))
                 .sum::<i32>() as f32,
             hidden,
+            source_index: raw_entry.source_index,
         });
 
         self.word_id_by_string
@@ -418,6 +432,7 @@ impl WordList {
                 word.score = raw_entry.score as f32;
                 word.hidden = false;
                 word.canonical_string = raw_entry.canonical.clone();
+                word.source_index = raw_entry.source_index;
                 removed_words_set.remove(&(word_length, existing_word_id));
             } else if !silent {
                 added_any_words = true;
@@ -432,6 +447,7 @@ impl WordList {
         // Finally, hide any words that were in our existing list but aren't in the new one.
         for &(length, word_id) in &removed_words_set {
             self.words[length][word_id].hidden = true;
+            self.words[length][word_id].source_index = None;
         }
 
         if let Some(mut on_update) = self.on_update.take() {
