@@ -514,15 +514,6 @@ impl WordList {
         }
     }
 
-    pub fn add_words_to_dupe_index(&self, index: &mut dyn AnyDupeIndex, words: &[GlobalWordId]) {
-        if index.window_size() == 0 {
-            return;
-        }
-        for &(length, word_id) in words {
-            index.add_word(word_id, &self.words[length][word_id]);
-        }
-    }
-
     pub fn optimistically_update_word(&mut self, canonical: &str, score: i32, source_index: u16) {
         let normalized = normalize_word(canonical);
         if normalized.is_empty() {
