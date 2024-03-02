@@ -95,21 +95,21 @@ impl fmt::Display for WordListError {
 /// Configuration describing a source of wordlist entries.
 pub enum WordListSourceConfig<'a> {
     Memory {
-        id: usize,
+        id: String,
         words: &'a [(String, i32)],
     },
     File {
-        id: usize,
+        id: String,
         path: OsString,
     },
     FileContents {
-        id: usize,
+        id: String,
         contents: &'a str,
     },
 }
 
 /// `WordListErrors` keyed by the `id` of the relevant source.
-pub type WordListSourceErrors = HashMap<usize, Vec<WordListError>>;
+pub type WordListSourceErrors = HashMap<String, Vec<WordListError>>;
 
 /// A single word list entry.
 #[allow(dead_code)]
@@ -211,7 +211,7 @@ fn load_words_from_source(
     };
 
     if !errors.is_empty() {
-        all_errors.insert(*source_id, errors);
+        all_errors.insert(source_id.clone(), errors);
     }
 
     entries
@@ -576,7 +576,7 @@ pub mod tests {
     #[must_use]
     pub fn word_list_source_config() -> Vec<WordListSourceConfig<'static>> {
         vec![WordListSourceConfig::File {
-            id: 0,
+            id: "0".into(),
             path: dictionary_path().into(),
         }]
     }
@@ -638,7 +638,7 @@ pub mod tests {
     fn test_unusual_characters() {
         let (word_list, _word_list_errors) = WordList::new(
             &[WordListSourceConfig::Memory {
-                id: 0,
+                id: "0".into(),
                 words: &[
                     // Non-English character expressed as one two-byte `char`
                     ("monsutâ".into(), 50),
@@ -683,7 +683,7 @@ pub mod tests {
 
         word_list.replace_list(
             &[WordListSourceConfig::Memory {
-                id: 0,
+                id: "0".into(),
                 words: &[
                     ("golf".into(), 0),
                     ("golfy".into(), 0),
@@ -750,11 +750,11 @@ pub mod tests {
         let (mut word_list, word_list_errors) = WordList::new(
             &[
                 WordListSourceConfig::Memory {
-                    id: 0,
+                    id: "0".into(),
                     words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
                 WordListSourceConfig::File {
-                    id: 1,
+                    id: "1".into(),
                     path: dictionary_path().into(),
                 },
             ],
@@ -814,11 +814,11 @@ pub mod tests {
         word_list.replace_list(
             &[
                 WordListSourceConfig::File {
-                    id: 1,
+                    id: "1".into(),
                     path: dictionary_path().into(),
                 },
                 WordListSourceConfig::Memory {
-                    id: 0,
+                    id: "0".into(),
                     words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
             ],

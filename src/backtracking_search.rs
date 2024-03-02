@@ -1231,11 +1231,11 @@ mod tests {
         let (word_list, _word_list_errors) = WordList::new(
             &[
                 WordListSourceConfig::Memory {
-                    id: 0,
+                    id: "0".into(),
                     words: &[("monsutâ".into(), 50), ("âbc".into(), 50)],
                 },
                 WordListSourceConfig::File {
-                    id: 1,
+                    id: "1".into(),
                     path: dictionary_path().into(),
                 },
             ],

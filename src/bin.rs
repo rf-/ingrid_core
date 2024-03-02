@@ -80,11 +80,11 @@ fn main() -> Result<(), Error> {
     let (word_list, word_list_errors) = WordList::new(
         &[match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
-                id: 0,
+                id: "0".into(),
                 path: wordlist_path.into(),
             },
             None => WordListSourceConfig::FileContents {
-                id: 0,
+                id: "0".into(),
                 contents: STWL_RAW,
             },
         }],
