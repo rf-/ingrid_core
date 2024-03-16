@@ -210,10 +210,7 @@ fn load_words_from_source(
         }
     };
 
-    if !errors.is_empty() {
-        all_errors.insert(source_id.clone(), errors);
-    }
-
+    all_errors.insert(source_id.clone(), errors);
     entries
 }
 
