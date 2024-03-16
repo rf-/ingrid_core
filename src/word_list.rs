@@ -80,12 +80,12 @@ pub enum WordListError {
 impl fmt::Display for WordListError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let string = match self {
-            WordListError::InvalidPath(path) => format!("Can't read file: \"{path}\""),
+            WordListError::InvalidPath(path) => format!("Can’t read file: “{path}”"),
             WordListError::InvalidWord(word) => {
-                format!("Word list contains invalid word: \"{word}\"")
+                format!("Word list contains invalid word: “{word}”")
             }
             WordListError::InvalidScore(score) => {
-                format!("Word list contains invalid score: \"{score}\"")
+                format!("Word list contains invalid score: “{score}”")
             }
         };
         write!(f, "{string}")
