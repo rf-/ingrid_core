@@ -58,6 +58,9 @@ pub struct Word {
     /// the same word appears in multiple sources, this will be the highest-priority (i.e., lowest)
     /// one.
     pub source_index: Option<u16>,
+
+    /// Does the word also appear in any lower-priority lists than the one it came from?
+    pub shadowed: bool,
 }
 
 /// Given a canonical word string from a dictionary file, turn it into the normalized form we'll
@@ -239,37 +242,6 @@ fn load_words_from_source(
     (entries, WordListSourceState { id, mtime, errors })
 }
 
-fn load_words_from_sources(
-    sources: &[WordListSourceConfig],
-) -> (Vec<RawWordListEntry>, WordListSourceStates) {
-    fn hash_str(str: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        str.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    assert!(sources.len() < 2usize.pow(16), "Too many word list sources");
-
-    let mut seen_words: HashSet<u64> = HashSet::new();
-    let mut result = vec![];
-    let mut states = HashMap::new();
-
-    for (source_index, source) in sources.iter().enumerate() {
-        let (words, source_state) = load_words_from_source(source, source_index as u16);
-        for word in words {
-            let hash = hash_str(&word.normalized);
-            if seen_words.contains(&hash) {
-                continue;
-            }
-            result.push(word);
-            seen_words.insert(hash);
-        }
-        states.insert(source_state.id.clone(), source_state);
-    }
-
-    (result, states)
-}
-
 type OnUpdateCallback =
     Box<dyn FnMut(&mut WordList, &[GlobalWordId], &[GlobalWordId]) + Send + Sync>;
 
@@ -405,6 +377,7 @@ impl WordList {
                 .sum::<i32>() as f32,
             hidden,
             source_index: raw_entry.source_index,
+            shadowed: false,
         });
 
         self.word_id_by_string
@@ -452,41 +425,52 @@ impl WordList {
             }
         }
 
-        let (raw_entries, source_states) = load_words_from_sources(&self.source_configs);
-        self.source_states = source_states;
-
-        // Now go through our new words and add them.
-        for raw_entry in raw_entries {
-            let word_length = raw_entry.length;
-            if let Some(max_length) = max_length {
-                if word_length > max_length {
-                    continue;
+        self.source_states = self.load_words_from_source_configs(
+            |word_list, raw_entry| {
+                let word_length = raw_entry.length;
+                if let Some(max_length) = max_length {
+                    if word_length > max_length {
+                        return;
+                    }
                 }
-            }
 
-            let existing_word_id = self.word_id_by_string.get(&raw_entry.normalized);
+                let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
 
-            if let Some(&existing_word_id) = existing_word_id {
-                let word = &mut self.words[word_length][existing_word_id];
-                word.score = raw_entry.score as f32;
-                word.hidden = false;
-                word.canonical_string = raw_entry.canonical.clone();
-                word.source_index = raw_entry.source_index;
-                removed_words_set.remove(&(word_length, existing_word_id));
-            } else if !silent {
-                added_any_words = true;
-                let added_word_id = self.add_word_silent(&raw_entry, false);
-                added_words.push(added_word_id);
-            } else {
-                added_any_words = true;
-                self.add_word_silent(&raw_entry, false);
-            }
-        }
+                if let Some(&existing_word_id) = existing_word_id {
+                    let word = &mut word_list.words[word_length][existing_word_id];
+                    word.score = raw_entry.score as f32;
+                    word.hidden = false;
+                    word.canonical_string = raw_entry.canonical.clone();
+                    word.source_index = raw_entry.source_index;
+                    word.shadowed = false;
+                    removed_words_set.remove(&(word_length, existing_word_id));
+                } else if !silent {
+                    added_any_words = true;
+                    let added_word_id = word_list.add_word_silent(&raw_entry, false);
+                    added_words.push(added_word_id);
+                } else {
+                    added_any_words = true;
+                    word_list.add_word_silent(&raw_entry, false);
+                }
+            },
+            |word_list, raw_entry| {
+                let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
+
+                if let Some(&existing_word_id) = existing_word_id {
+                    let word = &mut word_list.words[raw_entry.length][existing_word_id];
+                    word.shadowed = true;
+                } else {
+                    #[cfg(feature = "check_invariants")]
+                    panic!("replace_list: called mark_as_shadowed without existing word");
+                }
+            },
+        );
 
         // Finally, hide any words that were in our existing list but aren't in the new one.
         for &(length, word_id) in &removed_words_set {
             self.words[length][word_id].hidden = true;
             self.words[length][word_id].source_index = None;
+            self.words[length][word_id].shadowed = false;
         }
 
         if let Some(mut on_update) = self.on_update.take() {
@@ -499,6 +483,44 @@ impl WordList {
         }
 
         (added_any_words, removed_words_set)
+    }
+
+    fn load_words_from_source_configs(
+        &mut self,
+        mut add_word: impl FnMut(&mut WordList, RawWordListEntry),
+        mut mark_as_shadowed: impl FnMut(&mut WordList, RawWordListEntry),
+    ) -> WordListSourceStates {
+        fn hash_str(str: &str) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            str.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let source_configs = std::mem::take(&mut self.source_configs);
+        assert!(
+            source_configs.len() < 2usize.pow(16),
+            "Too many word list sources"
+        );
+
+        let mut seen_words: HashSet<u64> = HashSet::new();
+        let mut states = HashMap::new();
+
+        for (source_index, source) in source_configs.iter().enumerate() {
+            let (words, source_state) = load_words_from_source(source, source_index as u16);
+            for word in words {
+                let hash = hash_str(&word.normalized);
+                if seen_words.contains(&hash) {
+                    mark_as_shadowed(self, word);
+                    continue;
+                }
+                add_word(self, word);
+                seen_words.insert(hash);
+            }
+            states.insert(source_state.id.clone(), source_state);
+        }
+
+        self.source_configs = source_configs;
+        states
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
@@ -553,6 +575,10 @@ impl WordList {
         }
     }
 
+    /// Update the word list state to be consistent with the given word being upserted into
+    /// the given source. This never requires a refresh, since we either add a
+    /// previously-unknown word, update or shadow an existing definition, or just ignore the
+    /// update if it would be shadowed.
     pub fn optimistically_update_word(&mut self, canonical: &str, score: i32, source_index: u16) {
         let normalized = normalize_word(canonical);
         if normalized.is_empty() {
@@ -565,12 +591,59 @@ impl WordList {
             .source_index
             .map_or(true, |existing_index| source_index <= existing_index);
 
-        if should_update {
-            word.canonical_string = canonical.into();
-            word.score = score as f32;
-            word.hidden = false;
-            word.source_index = Some(source_index);
+        if !should_update {
+            word.shadowed = true;
+            return;
         }
+
+        let shadowed = word.shadowed
+            || word
+                .source_index
+                .map_or(false, |existing_index| source_index < existing_index);
+
+        word.canonical_string = canonical.into();
+        word.score = score as f32;
+        word.hidden = false;
+        word.source_index = Some(source_index);
+        word.shadowed = shadowed;
+    }
+
+    /// Update the word list state to be consistent with the given word being deleted from
+    /// the given source. Return whether we need a full refresh (because the word was
+    /// shadowed and now we need to reload it from whatever lower-priority source it was in).
+    pub fn optimistically_delete_word(&mut self, normalized: &str, source_index: u16) -> bool {
+        let length = normalized.chars().count();
+        let Some(&word_id) = self.word_id_by_string.get(normalized) else {
+            #[cfg(feature = "check_invariants")]
+            panic!("optimistically_delete_word: word doesn't exist");
+            #[cfg(not(feature = "check_invariants"))]
+            return false;
+        };
+
+        let word = &mut self.words[length][word_id];
+
+        // If the version we have stored isn't from this list, no action is needed --
+        // either it's not present in the list at all, or it's already shadowed by a
+        // higher-priority source.
+        if word.source_index != Some(source_index) {
+            #[cfg(feature = "check_invariants")]
+            assert!(
+                word.source_index.map_or(false, |existing_index| source_index > existing_index),
+                "optimistically_delete_word: expected existing index to be less than {:?}, but it was {:?}",
+                source_index,
+                word.source_index
+            );
+            #[cfg(not(feature = "check_invariants"))]
+            return false;
+        }
+
+        // Now we can mark it as hidden, but if it was shadowed we need to refresh since
+        // hiding it may have been incorrect.
+        let was_shadowed = word.shadowed;
+        word.hidden = true;
+        word.source_index = None;
+        word.shadowed = false;
+        was_shadowed
     }
 
     /// For each source provided last time we loaded or updated, return any errors it emitted.
@@ -835,18 +908,21 @@ pub mod tests {
             assert_eq!(wolves.score, 70.0);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 71.0);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(0));
+            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50.0);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(1));
+            assert_eq!(wharves.shadowed, false);
         }
 
         word_list.optimistically_update_word("wolves", 72, 0);
@@ -860,18 +936,43 @@ pub mod tests {
             assert_eq!(wolves.score, 72.0);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 73.0);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
+            assert_eq!(wharves.shadowed, true);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.score, 74.0);
             assert_eq!(worfs.hidden, false);
             assert_eq!(worfs.source_index, Some(0));
+            assert_eq!(worfs.shadowed, false);
+        }
+
+        assert!(
+            word_list.optimistically_delete_word("wolves", 0),
+            "deleting wolves needs refresh"
+        );
+        assert!(
+            !word_list.optimistically_delete_word("worfs", 0),
+            "deleting worfs does not need refresh"
+        );
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.hidden, true);
+            assert_eq!(wolves.source_index, None);
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let worfs = word_list.get_word(worfs_id);
+            assert_eq!(worfs.hidden, true);
+            assert_eq!(worfs.source_index, None);
+            assert_eq!(worfs.shadowed, false);
         }
 
         word_list.replace_list(
@@ -894,23 +995,27 @@ pub mod tests {
             assert_eq!(wolves.score, 50.0);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 71.0);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(1));
+            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50.0);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
+            assert_eq!(wharves.shadowed, false);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.hidden, true);
             assert_eq!(worfs.source_index, None);
+            assert_eq!(worfs.shadowed, false);
         }
 
         word_list.optimistically_update_word("wolves", 80, 1);
@@ -923,24 +1028,28 @@ pub mod tests {
             assert_eq!(wolves.score, 50.0);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 81.0);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(1));
+            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50.0);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
+            assert_eq!(wharves.shadowed, true);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.score, 83.0);
             assert_eq!(worfs.hidden, false);
             assert_eq!(worfs.source_index, Some(1));
+            assert_eq!(worfs.shadowed, false);
         }
     }
 }
