@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fmt::Debug;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::SystemTime;
-use std::{fmt, fs};
+use std::{fmt, fs, io, mem};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
@@ -97,6 +97,7 @@ impl fmt::Display for WordListError {
 }
 
 /// Configuration describing a source of wordlist entries.
+#[derive(Debug, Clone)]
 pub enum WordListSourceConfig {
     Memory {
         id: String,
@@ -134,11 +135,20 @@ impl WordListSourceConfig {
     }
 }
 
+/// A word list change waiting to be persisted.
+#[derive(Debug, Clone)]
+pub enum PendingWordListUpdate {
+    AddOrUpdate { canonical: String, score: i32 },
+    Delete,
+}
+
 #[derive(Debug)]
 pub struct WordListSourceState {
+    pub source_index: u16,
     pub id: String,
     pub mtime: Option<SystemTime>,
     pub errors: Vec<WordListError>,
+    pub pending_updates: HashMap<String, PendingWordListUpdate>,
 }
 
 /// `WordListSourceState`s keyed by the `id` of the relevant source.
@@ -146,6 +156,7 @@ pub type WordListSourceStates = HashMap<String, WordListSourceState>;
 
 /// A single word list entry.
 #[allow(dead_code)]
+#[derive(Debug)]
 struct RawWordListEntry {
     pub length: usize,
     pub normalized: String,
@@ -239,11 +250,44 @@ fn load_words_from_source(
         }
     };
 
-    (entries, WordListSourceState { id, mtime, errors })
+    (
+        entries,
+        WordListSourceState {
+            source_index,
+            id,
+            mtime,
+            errors,
+            pending_updates: HashMap::new(),
+        },
+    )
 }
 
 type OnUpdateCallback =
     Box<dyn FnMut(&mut WordList, &[GlobalWordId], &[GlobalWordId]) + Send + Sync>;
+
+/// How urgently we need to sync to disk, if at all. `LowPriority` means we have changes that
+/// exist only in memory; `HighPriority` means `words` may actually be incorrect until we sync.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SyncState {
+    Synced,
+    LowPriority,
+    HighPriority,
+}
+
+/// Errors that can arise when syncing to disk, keyed by the relevant source id.
+type SyncErrors = HashMap<String, io::Error>;
+
+/// Result of a call to `optimistically_delete_word`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OptimisticDeletionResult {
+    /// We didn't modify `words` because there was a higher-priority entry.
+    NoChange,
+    /// We modified `words` and `shadowed` was false, so we don't need to reload.
+    CleanDeletion,
+    /// We modified `words` and `shadowed` was true, so we need to reload to ensure we aren't
+    /// missing a relevant lower-priority entry.
+    PossiblyIncorrectDeletion,
+}
 
 /// A struct representing the currently-loaded word list(s). This contains information that is
 /// static regardless of grid geometry or our progress through a fill (although we do configure a
@@ -280,6 +324,9 @@ pub struct WordList {
 
     /// The last seen state of each word list source, keyed by source id.
     pub source_states: HashMap<String, WordListSourceState>,
+
+    /// Flag for whether we need to sync with disk.
+    pub sync_state: SyncState,
 }
 
 impl WordList {
@@ -302,6 +349,7 @@ impl WordList {
             on_update: None,
             source_configs: vec![],
             source_states: HashMap::new(),
+            sync_state: SyncState::Synced,
         };
 
         instance.replace_list(source_configs, max_length, false);
@@ -389,9 +437,9 @@ impl WordList {
         (word_length, word_id)
     }
 
-    /// Add all of the given words to the list, and hide any non-hidden words that aren't included
-    /// in the new list. We don't fully remove them because we want to keep all of the ids stable
-    /// and they may still be referenced elsewhere.
+    /// Refresh the word list from the given sources. This fully replaces the list from an
+    /// outside perspective, although we don't actually remove any words since we want to
+    /// keep word ids stable in case they're referenced elsewhere.
     ///
     /// We return a boolean indicating whether we added any words, along with a set of removed
     /// words. If `silent` is false and an `on_update` callback is present, we track both added and
@@ -410,10 +458,17 @@ impl WordList {
             .words
             .iter()
             .enumerate()
-            .flat_map(|(length, word_ids)| {
-                (0..word_ids.len()).map(move |word_id| (length, word_id))
+            .flat_map(|(length, words)| {
+                words.iter().enumerate().filter_map(move |(word_id, word)| {
+                    if word.hidden {
+                        None
+                    } else {
+                        Some((length, word_id))
+                    }
+                })
             })
             .collect();
+
         let mut added_words: Vec<GlobalWordId> = vec![];
         let mut added_any_words = false;
         let silent = silent || self.on_update.is_none();
@@ -425,7 +480,7 @@ impl WordList {
             }
         }
 
-        self.source_states = self.load_words_from_source_configs(
+        self.load_words_from_source_configs(
             |word_list, raw_entry| {
                 let word_length = raw_entry.length;
                 if let Some(max_length) = max_length {
@@ -438,6 +493,12 @@ impl WordList {
 
                 if let Some(&existing_word_id) = existing_word_id {
                     let word = &mut word_list.words[word_length][existing_word_id];
+                    if word.hidden {
+                        added_any_words = true;
+                        if !silent {
+                            added_words.push((word_length, existing_word_id));
+                        }
+                    }
                     word.score = raw_entry.score as f32;
                     word.hidden = false;
                     word.canonical_string = raw_entry.canonical.clone();
@@ -489,25 +550,62 @@ impl WordList {
         &mut self,
         mut add_word: impl FnMut(&mut WordList, RawWordListEntry),
         mut mark_as_shadowed: impl FnMut(&mut WordList, RawWordListEntry),
-    ) -> WordListSourceStates {
+    ) {
         fn hash_str(str: &str) -> u64 {
             let mut hasher = DefaultHasher::new();
             str.hash(&mut hasher);
             hasher.finish()
         }
 
-        let source_configs = std::mem::take(&mut self.source_configs);
+        let source_configs = mem::take(&mut self.source_configs);
+        let mut source_states = mem::take(&mut self.source_states);
         assert!(
             source_configs.len() < 2usize.pow(16),
             "Too many word list sources"
         );
 
         let mut seen_words: HashSet<u64> = HashSet::new();
-        let mut states = HashMap::new();
+        let mut new_states = HashMap::new();
 
         for (source_index, source) in source_configs.iter().enumerate() {
-            let (words, source_state) = load_words_from_source(source, source_index as u16);
-            for word in words {
+            let (words, mut new_state) = load_words_from_source(source, source_index as u16);
+
+            let mut words_iter: Box<dyn Iterator<Item = RawWordListEntry>> =
+                Box::new(words.into_iter());
+
+            // If there are any pending updates on the old state, they take priority over
+            // the list as stored. We'll also bring them over to the new state unchanged.
+            let old_state = source_states.remove(&new_state.id);
+            let mut updated_words: Vec<RawWordListEntry> = vec![];
+            if let Some(old_state) = old_state {
+                if !old_state.pending_updates.is_empty() {
+                    let mut superseded_words = HashSet::new();
+
+                    for (normalized, pending_update) in &old_state.pending_updates {
+                        superseded_words.insert(normalized.clone());
+
+                        if let PendingWordListUpdate::AddOrUpdate { canonical, score } =
+                            pending_update
+                        {
+                            updated_words.push(RawWordListEntry {
+                                length: normalized.chars().count(),
+                                normalized: normalized.clone(),
+                                canonical: canonical.clone(),
+                                score: *score,
+                                source_index: Some(source_index as u16),
+                            });
+                        }
+                    }
+
+                    words_iter = Box::new(
+                        words_iter.filter(move |word| !superseded_words.contains(&word.normalized)),
+                    );
+                }
+
+                new_state.pending_updates = old_state.pending_updates;
+            }
+
+            for word in updated_words.into_iter().chain(words_iter) {
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
                     mark_as_shadowed(self, word);
@@ -516,11 +614,12 @@ impl WordList {
                 add_word(self, word);
                 seen_words.insert(hash);
             }
-            states.insert(source_state.id.clone(), source_state);
+
+            new_states.insert(new_state.id.clone(), new_state);
         }
 
         self.source_configs = source_configs;
-        states
+        self.source_states = new_states;
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
@@ -585,7 +684,37 @@ impl WordList {
             return;
         }
 
-        let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
+        // Regardless of whether this change is visible in `words`, we need to buffer it
+        // to be persisted to the file.
+        let source_id = self.source_configs[source_index as usize].id();
+        if let Some(source_state) = self.source_states.get_mut(&source_id) {
+            source_state.pending_updates.insert(
+                normalized.clone(),
+                PendingWordListUpdate::AddOrUpdate {
+                    canonical: canonical.into(),
+                    score,
+                },
+            );
+        } else {
+            panic!("optimistically_update_word: no source state found for id");
+        }
+        if self.sync_state == SyncState::Synced {
+            self.sync_state = SyncState::LowPriority;
+        }
+
+        self.optimistically_update_word_impl(&normalized, canonical, score, source_index);
+    }
+
+    /// Apply an optimistic update to `words`, without adding it to the pending updates or
+    /// modifying `sync_state`.
+    fn optimistically_update_word_impl(
+        &mut self,
+        normalized: &str,
+        canonical: &str,
+        score: i32,
+        source_index: u16,
+    ) {
+        let (length, word_id) = self.get_word_id_or_add_hidden(normalized);
         let word = &mut self.words[length][word_id];
         let should_update = word
             .source_index
@@ -609,15 +738,50 @@ impl WordList {
     }
 
     /// Update the word list state to be consistent with the given word being deleted from
-    /// the given source. Return whether we need a full refresh (because the word was
-    /// shadowed and now we need to reload it from whatever lower-priority source it was in).
-    pub fn optimistically_delete_word(&mut self, normalized: &str, source_index: u16) -> bool {
+    /// the given source.
+    pub fn optimistically_delete_word(
+        &mut self,
+        normalized: &str,
+        source_index: u16,
+    ) -> OptimisticDeletionResult {
+        // Regardless of whether this change is visible in `words`, we need to buffer it
+        // to be persisted to the file.
+        let source_id = self.source_configs[source_index as usize].id();
+        if let Some(source_state) = self.source_states.get_mut(&source_id) {
+            source_state
+                .pending_updates
+                .insert(normalized.to_string(), PendingWordListUpdate::Delete);
+        } else {
+            panic!("optimistically_delete_word: no source state found for id");
+        }
+        if self.sync_state == SyncState::Synced {
+            self.sync_state = SyncState::LowPriority;
+        }
+
+        // Now we can mark it as hidden, but if it was shadowed we need to refresh since
+        // hiding it may have been incorrect.
+        let result = self.optimistically_delete_word_impl(normalized, source_index);
+        if result == OptimisticDeletionResult::PossiblyIncorrectDeletion
+            && self.sync_state != SyncState::HighPriority
+        {
+            self.sync_state = SyncState::HighPriority;
+        }
+        result
+    }
+
+    /// Apply an optimistic deletion to `words`, without adding it to the pending updates or
+    /// modifying `sync_state`.
+    fn optimistically_delete_word_impl(
+        &mut self,
+        normalized: &str,
+        source_index: u16,
+    ) -> OptimisticDeletionResult {
         let length = normalized.chars().count();
         let Some(&word_id) = self.word_id_by_string.get(normalized) else {
             #[cfg(feature = "check_invariants")]
-            panic!("optimistically_delete_word: word doesn't exist");
+            panic!("optimistically_delete_word_impl: word doesn't exist");
             #[cfg(not(feature = "check_invariants"))]
-            return false;
+            return OptimisticDeletionResult::NoChange;
         };
 
         let word = &mut self.words[length][word_id];
@@ -626,24 +790,176 @@ impl WordList {
         // either it's not present in the list at all, or it's already shadowed by a
         // higher-priority source.
         if word.source_index != Some(source_index) {
-            #[cfg(feature = "check_invariants")]
-            assert!(
-                word.source_index.map_or(false, |existing_index| source_index > existing_index),
-                "optimistically_delete_word: expected existing index to be less than {:?}, but it was {:?}",
-                source_index,
-                word.source_index
-            );
-            #[cfg(not(feature = "check_invariants"))]
-            return false;
+            return OptimisticDeletionResult::NoChange;
         }
 
-        // Now we can mark it as hidden, but if it was shadowed we need to refresh since
-        // hiding it may have been incorrect.
         let was_shadowed = word.shadowed;
         word.hidden = true;
         word.source_index = None;
         word.shadowed = false;
-        was_shadowed
+
+        if was_shadowed {
+            OptimisticDeletionResult::PossiblyIncorrectDeletion
+        } else {
+            OptimisticDeletionResult::CleanDeletion
+        }
+    }
+
+    /// If there are any pending updates, write them to disk. Refresh all sources if needed. If any
+    /// pending updates can't be written (probably due to something like permissions issues or a
+    /// drive not being mounted), return error info, reset `sync_state` to `Synced`, and keep the
+    /// pending updates in place. Also returns the same data as `replace_list` since it may need to
+    /// refresh.
+    pub fn sync_updates_to_disk(&mut self) -> (bool, HashSet<GlobalWordId>, SyncErrors) {
+        let mut should_refresh = self.sync_state == SyncState::HighPriority;
+        let mut sync_errors: SyncErrors = HashMap::new();
+
+        // For each source file, write any pending updates.
+        for source_state in self.source_states.values_mut() {
+            if source_state.pending_updates.is_empty() {
+                continue;
+            }
+
+            let source_config = &self.source_configs[source_state.source_index as usize];
+
+            // If the file was updated externally since the last time we reloaded it,
+            // there's no problem with this process since we'd read it from disk either
+            // way, but we'll definitely need to do a full refresh of the word list when
+            // we're done syncing.
+            if source_state.mtime != source_config.modified() {
+                should_refresh = true;
+            }
+
+            let WordListSourceConfig::File { path, .. } = &source_config else {
+                panic!("sync_updates_to_disk: non-file config had pending changes");
+            };
+            let path = path.clone();
+            let mut pending_updates = source_state.pending_updates.clone();
+
+            // Load the current file contents. Apply the pending changes inline to words
+            // that are already in the list, then append any new words to the end.
+            // We don't want to use `parse_word_list_file_contents` here since that
+            // prioritizes ending up with a clean list and parse errors, whereas here we
+            // want to be as unopinionated as possible.
+            let file_contents = match fs::read_to_string(&path) {
+                Ok(contents) => contents,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    // If the file doesn't exist, we can just treat it as empty.
+                    String::new()
+                }
+                Err(err) => {
+                    sync_errors.insert(source_state.id.clone(), err);
+                    continue;
+                }
+            };
+
+            // If we have file contents, check whether the first line ending is
+            // Windows-style or Unix-style and follow suit. Otherwise, use Windows line
+            // endings on Windows.
+            let use_windows_line_endings = {
+                let first_n = file_contents.find('\n');
+                if let Some(first_n) = first_n {
+                    first_n > 0 && file_contents.as_bytes()[first_n - 1] == b'\r'
+                } else {
+                    cfg!(target_os = "windows")
+                }
+            };
+
+            // For each line, either omit it if the user deleted the word, replace its
+            // canonical string and score if the user updated the word, or leave it as is.
+            // Leave any extra semicolon-separated fields alone.
+            let mut modified_lines: Vec<String> = file_contents
+                .lines()
+                .filter_map(|line| {
+                    let mut line_parts: Vec<String> = line.split(';').map(str::to_string).collect();
+                    let normalized = normalize_word(&line_parts[0]);
+
+                    if pending_updates.get(&normalized).is_none() {
+                        return Some(line.to_string());
+                    }
+
+                    // We have to do this the ugly way since otherwise we'd have to choose
+                    // whether to remove the update or not before we know what type it is,
+                    // and we want to leave deletions in place so they apply to any number
+                    // of entries in the file.
+                    if matches!(
+                        pending_updates.get(&normalized),
+                        Some(PendingWordListUpdate::Delete)
+                    ) {
+                        return None;
+                    }
+
+                    if let Some(PendingWordListUpdate::AddOrUpdate { canonical, score }) =
+                        pending_updates.remove(&normalized)
+                    {
+                        line_parts[0] = canonical;
+                        if line_parts.len() < 2 {
+                            line_parts.push(score.to_string());
+                        } else {
+                            line_parts[1] = score.to_string();
+                        }
+                        return Some(line_parts.join(";"));
+                    }
+
+                    unreachable!()
+                })
+                .collect();
+
+            // Since we already removed the updates corresponding to any words that
+            // already existed, what's left is words we should append to the bottom.
+            for pending_update in pending_updates.values() {
+                if let PendingWordListUpdate::AddOrUpdate { canonical, score } = pending_update {
+                    modified_lines.push([canonical.as_str(), score.to_string().as_str()].join(";"));
+                }
+            }
+
+            let mut new_file_contents = String::new();
+            for line in modified_lines {
+                new_file_contents.push_str(&line);
+                if use_windows_line_endings {
+                    new_file_contents.push('\r');
+                }
+                new_file_contents.push('\n');
+            }
+
+            // For safety, first write to a temporary file and then rename it over the
+            // destination file.
+            let mut temp_path = path.clone();
+            temp_path.push(".tmp");
+            if let Err(err) = fs::write(&temp_path, new_file_contents) {
+                sync_errors.insert(source_state.id.clone(), err);
+                continue;
+            }
+            if let Err(err) = fs::rename(&temp_path, &path) {
+                sync_errors.insert(source_state.id.clone(), err);
+                continue;
+            }
+
+            // Now that we've updated the file, store its new mtime and clear the pending
+            // updates. Note that technically this is racy since the file could have been
+            // written by someone else between when we wrote it and checked the mtime. If
+            // this happened, we could miss those updates until the file is written again
+            // or the user makes more modifications.
+            source_state.mtime = source_config.modified();
+            source_state.pending_updates = HashMap::new();
+        }
+
+        // Regardless of whether we actually succeeded in syncing everything, we should
+        // reset this flag so that we don't end up accidentally infinite-looping. Calling
+        // `sync_updates_to_disk` again will still retry and files that failed, since the
+        // pending updates are still present.
+        self.sync_state = SyncState::Synced;
+
+        // Finally, if we've seen evidence that we need to refresh, do so. If any updates
+        // failed, their pending changes will get carried over through the refresh,
+        // whether or not we can actually load the relevant file.
+        let (added_any, removed_words) = if should_refresh {
+            self.replace_list(self.source_configs.clone(), self.max_length, false)
+        } else {
+            (false, HashSet::new())
+        };
+
+        (added_any, removed_words, sync_errors)
     }
 
     /// For each source provided last time we loaded or updated, return any errors it emitted.
@@ -692,10 +1008,16 @@ impl Debug for WordList {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
+#[allow(clippy::float_cmp)]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::similar_names)]
 pub mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
     use crate::types::GlobalWordId;
-    use crate::word_list::{WordList, WordListSourceConfig};
+    use crate::word_list::{OptimisticDeletionResult, SyncState, WordList, WordListSourceConfig};
+    use std::collections::HashSet;
+    use std::fs;
     use std::path;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -719,8 +1041,6 @@ pub mod tests {
     }
 
     #[test]
-    #[allow(clippy::bool_assert_comparison)]
-    #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
         let word_list = WordList::new(word_list_source_config(), Some(5), None);
 
@@ -742,7 +1062,6 @@ pub mod tests {
     }
 
     #[test]
-    #[allow(clippy::bool_assert_comparison)]
     fn test_dynamic_max_length() {
         let mut word_list = WordList::new(word_list_source_config(), None, None);
 
@@ -792,7 +1111,6 @@ pub mod tests {
     }
 
     #[test]
-    #[allow(clippy::similar_names)]
     fn test_soft_dupe_index() {
         let mut word_list = WordList::new(vec![], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
@@ -878,9 +1196,6 @@ pub mod tests {
     }
 
     #[test]
-    #[allow(clippy::bool_assert_comparison)]
-    #[allow(clippy::float_cmp)]
-    #[allow(clippy::too_many_lines)]
     fn test_source_management() {
         let mut word_list = WordList::new(
             vec![
@@ -953,13 +1268,13 @@ pub mod tests {
             assert_eq!(worfs.shadowed, false);
         }
 
-        assert!(
+        assert_eq!(
             word_list.optimistically_delete_word("wolves", 0),
-            "deleting wolves needs refresh"
+            OptimisticDeletionResult::PossiblyIncorrectDeletion
         );
-        assert!(
-            !word_list.optimistically_delete_word("worfs", 0),
-            "deleting worfs does not need refresh"
+        assert_eq!(
+            word_list.optimistically_delete_word("worfs", 0),
+            OptimisticDeletionResult::CleanDeletion
         );
 
         {
@@ -995,7 +1310,7 @@ pub mod tests {
             assert_eq!(wolves.score, 50.0);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
+            assert_eq!(wolves.shadowed, false);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
@@ -1009,7 +1324,7 @@ pub mod tests {
             assert_eq!(wharves.score, 50.0);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
-            assert_eq!(wharves.shadowed, false);
+            assert_eq!(wharves.shadowed, true); // optimistic update is still there
         }
         {
             let worfs = word_list.get_word(worfs_id);
@@ -1051,5 +1366,316 @@ pub mod tests {
             assert_eq!(worfs.source_index, Some(1));
             assert_eq!(worfs.shadowed, false);
         }
+    }
+
+    #[test]
+    fn test_word_list_updating() {
+        let tmpfile_1 = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile_1.path(), "wolves;51\nsteev;54\nijsnzlsj;20\n").unwrap();
+
+        let tmpfile_2 = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile_2.path(), "wolves;52\r\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    path: tmpfile_1.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    path: dictionary_path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "2".into(),
+                    path: tmpfile_2.path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+        let steev_id = word_list.get_word_id_or_add_hidden("steev");
+        let what_id = word_list.get_word_id_or_add_hidden("what");
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 51.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.score, 54.0);
+            assert_eq!(steev.hidden, false);
+            assert_eq!(steev.source_index, Some(0));
+            assert_eq!(steev.shadowed, false);
+        }
+        {
+            let what = word_list.get_word(what_id);
+            assert_eq!(what.score, 50.0);
+            assert_eq!(what.hidden, false);
+            assert_eq!(what.source_index, Some(1));
+            assert_eq!(what.shadowed, false);
+        }
+
+        word_list.optimistically_update_word("wOl vEs", 60, 0);
+        word_list.optimistically_delete_word("steev", 0);
+        word_list.optimistically_update_word("Wolves", 99, 2);
+        word_list.optimistically_update_word("tonberry", 30, 2);
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.canonical_string, "wOl vEs");
+            assert_eq!(wolves.score, 60.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.score, 54.0);
+            assert_eq!(steev.hidden, true);
+            assert_eq!(steev.source_index, None);
+            assert_eq!(steev.shadowed, false);
+        }
+        {
+            let tonberry_id = word_list.get_word_id_or_add_hidden("tonberry");
+            let tonberry = word_list.get_word(tonberry_id);
+            assert_eq!(tonberry.score, 30.0);
+            assert_eq!(tonberry.hidden, false);
+            assert_eq!(tonberry.source_index, Some(2));
+            assert_eq!(tonberry.shadowed, false);
+        }
+        assert_eq!(word_list.sync_state, SyncState::LowPriority);
+
+        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!added_any);
+        assert!(removed_words.is_empty());
+        assert!(sync_errors.is_empty());
+
+        assert_eq!(
+            fs::read_to_string(tmpfile_1.path()).unwrap(),
+            "wOl vEs;60\nijsnzlsj;20\n"
+        );
+        assert_eq!(
+            fs::read_to_string(tmpfile_2.path()).unwrap(),
+            "Wolves;99\r\ntonberry;30\r\n"
+        );
+    }
+
+    #[test]
+    fn test_word_list_handle_shadowed_deletion() {
+        let tmpfile_1 = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile_1.path(), "wolves;51\nsteev;54\nijsnzlsj;20\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    path: tmpfile_1.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 51.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(0));
+            assert_eq!(wolves.shadowed, true);
+        }
+
+        // Since "wolves" is shadowed, if we delete it we'll be in an inconsistent state,
+        // so the `sync_state` needs to reflect that.
+        word_list.optimistically_delete_word("wolves", 0);
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.canonical_string, "wolves");
+            assert_eq!(wolves.score, 51.0);
+            assert_eq!(wolves.hidden, true);
+            assert_eq!(wolves.source_index, None);
+            assert_eq!(wolves.shadowed, false);
+        }
+        assert_eq!(word_list.sync_state, SyncState::HighPriority);
+
+        // If we then sync to disk, it will also refresh the list, which will be reflected
+        // in `added_any` since it's undoing the optimistic update.
+        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(added_any);
+        assert_eq!(removed_words, HashSet::new());
+        assert!(sync_errors.is_empty());
+
+        assert_eq!(
+            fs::read_to_string(tmpfile_1.path()).unwrap(),
+            "steev;54\nijsnzlsj;20\n"
+        );
+    }
+
+    #[test]
+    fn test_word_list_handle_replace_with_pending_changes() {
+        let tmpfile = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile.path(), "wolves;51\nsteev;54\nijsnzlsj;20\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+        let steev_id = word_list.get_word_id_or_add_hidden("steev");
+
+        // See previous test
+        word_list.optimistically_delete_word("wolves", 0);
+        word_list.optimistically_update_word("Steev", 55, 0);
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.canonical_string, "wolves");
+            assert_eq!(wolves.score, 51.0);
+            assert_eq!(wolves.hidden, true);
+            assert_eq!(wolves.source_index, None);
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.canonical_string, "Steev");
+            assert_eq!(steev.score, 55.0);
+            assert_eq!(steev.hidden, false);
+            assert_eq!(steev.source_index, Some(0));
+            assert_eq!(steev.shadowed, false);
+        }
+        assert_eq!(word_list.sync_state, SyncState::HighPriority);
+
+        // This time, we want to refresh the list before we sync the updates. Then ensure
+        // that we're still ready to sync and have still applied the updates on top of the
+        // new file contents.
+        fs::write(tmpfile.path(), "wolves;52\nsteev;48\nhejjira;20\n").unwrap();
+        let (added_any, removed_words) = word_list.replace_list(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            false,
+        );
+        assert!(added_any);
+        assert_eq!(
+            removed_words,
+            HashSet::from([word_list.get_word_id_or_add_hidden("ijsnzlsj")])
+        );
+        assert_eq!(word_list.sync_state, SyncState::HighPriority);
+        {
+            // The wolves change is actually applied correctly now, as a bonus.
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.canonical_string, "wolves");
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(1));
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.canonical_string, "Steev");
+            assert_eq!(steev.score, 55.0);
+            assert_eq!(steev.hidden, false);
+            assert_eq!(steev.source_index, Some(0));
+            assert_eq!(steev.shadowed, false);
+        }
+
+        // Make another out-of-band change, so we can validate that it gets loaded again
+        // when we sync.
+        fs::write(tmpfile.path(), "wolves;53\nsteev;47\nabcdedcba;22").unwrap();
+
+        // Now we can sync, merging the in-memory changes with our out-of-band changes.
+        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(added_any);
+        assert_eq!(
+            removed_words,
+            HashSet::from([word_list.get_word_id_or_add_hidden("hejjira")])
+        );
+        assert!(sync_errors.is_empty());
+        assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        assert_eq!(
+            fs::read_to_string(tmpfile.path()).unwrap(),
+            "Steev;55\nabcdedcba;22\n"
+        );
+    }
+
+    #[test]
+    fn test_word_list_handle_disk_sync_error() {
+        let tmpfile = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile.path(), "wolves;51\nsteev;54\nidkidkidk;10\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let idkidkidk_id = word_list.get_word_id_or_add_hidden("idkidkidk");
+
+        // See previous tests
+        word_list.optimistically_delete_word("wolves", 0);
+        word_list.optimistically_update_word("Steev", 55, 0);
+        assert_eq!(word_list.sync_state, SyncState::HighPriority);
+
+        // If we replace the tempfile with a directory, it will be impossible to sync to
+        // disk.
+        fs::remove_file(tmpfile.path()).unwrap();
+        fs::create_dir(tmpfile.path()).unwrap();
+
+        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(added_any); // the shadowed wolves reappearing
+        assert_eq!(removed_words, HashSet::from([idkidkidk_id]));
+        assert_eq!(
+            sync_errors.get("0").unwrap().to_string(),
+            "Is a directory (os error 21)"
+        );
+        assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        // Now, if we remove the directory, we should be able to write the updates to a
+        // new file in the same location. Note that `idkidkidk` is gone though, since we
+        // always prioritize the current state of the file over what we loaded before, and
+        // now it's empty.
+        fs::remove_dir(tmpfile.path()).unwrap();
+
+        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!added_any);
+        assert_eq!(removed_words, HashSet::new());
+        assert!(sync_errors.is_empty());
+        assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "Steev;55\n");
     }
 }

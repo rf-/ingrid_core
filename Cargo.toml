@@ -17,6 +17,7 @@ clap = { version = "4.0.15", features = ["derive"] }
 serde = { version = "1.0", optional = true }
 serde_derive = { version = "1.0", optional = true }
 unicode-normalization = "0.1.22"
+tempfile = "3"
 
 [dev-dependencies]
 ingrid_core = { path = ".", features = ["serde"] }
