@@ -141,9 +141,6 @@ pub struct WordListSourceState {
 /// `WordListSourceState`s keyed by the `id` of the relevant source.
 pub type WordListSourceStates = HashMap<String, WordListSourceState>;
 
-/// `WordListError`s keyed by the `id` of the relevant source.
-pub type WordListSourceErrors = HashMap<String, Vec<WordListError>>;
-
 /// A single word list entry.
 #[allow(dead_code)]
 struct RawWordListEntry {
@@ -322,7 +319,7 @@ impl WordList {
         source_configs: Vec<WordListSourceConfig>,
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
-    ) -> (WordList, WordListSourceErrors) {
+    ) -> WordList {
         let mut instance = WordList {
             glyphs: smallvec![],
             glyph_id_by_char: HashMap::new(),
@@ -335,10 +332,9 @@ impl WordList {
             source_states: HashMap::new(),
         };
 
-        let (_added_words, _removed_words, source_errors) =
-            instance.replace_list(source_configs, max_length, false);
+        instance.replace_list(source_configs, max_length, false);
 
-        (instance, source_errors)
+        instance
     }
 
     /// If the given normalized word is already in the list, return its id; if not, add it as a
@@ -432,7 +428,7 @@ impl WordList {
         source_configs: Vec<WordListSourceConfig>,
         max_length: Option<usize>,
         silent: bool,
-    ) -> (bool, HashSet<GlobalWordId>, WordListSourceErrors) {
+    ) -> (bool, HashSet<GlobalWordId>) {
         self.source_configs = source_configs;
         self.max_length = max_length;
 
@@ -457,11 +453,6 @@ impl WordList {
         }
 
         let (raw_entries, source_states) = load_words_from_sources(&self.source_configs);
-
-        let mut source_errors = HashMap::new();
-        for (source_id, source_state) in source_states.iter() {
-            source_errors.insert(source_id.clone(), source_state.errors.clone());
-        }
         self.source_states = source_states;
 
         // Now go through our new words and add them.
@@ -507,7 +498,7 @@ impl WordList {
             self.on_update = Some(on_update);
         }
 
-        (added_any_words, removed_words_set, source_errors)
+        (added_any_words, removed_words_set)
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
@@ -582,6 +573,18 @@ impl WordList {
         }
     }
 
+    /// For each source provided last time we loaded or updated, return any errors it emitted.
+    #[must_use]
+    pub fn get_source_errors(&self) -> HashMap<String, Vec<WordListError>> {
+        let mut source_errors = HashMap::new();
+
+        for (source_id, source_state) in &self.source_states {
+            source_errors.insert(source_id.clone(), source_state.errors.clone());
+        }
+
+        source_errors
+    }
+
     /// If any word lists have been modified since the last time we refreshed, return their ids.
     pub fn identify_stale_sources(&mut self) -> Vec<String> {
         self.source_configs
@@ -645,8 +648,7 @@ pub mod tests {
     #[allow(clippy::bool_assert_comparison)]
     #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
-        let (word_list, _word_list_errors) =
-            WordList::new(word_list_source_config(), Some(5), None);
+        let word_list = WordList::new(word_list_source_config(), Some(5), None);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 6);
@@ -668,8 +670,7 @@ pub mod tests {
     #[test]
     #[allow(clippy::bool_assert_comparison)]
     fn test_dynamic_max_length() {
-        let (mut word_list, _word_list_errors) =
-            WordList::new(word_list_source_config(), None, None);
+        let mut word_list = WordList::new(word_list_source_config(), None, None);
 
         assert_eq!(word_list.max_length, None);
         assert_eq!(word_list.words.len(), 16);
@@ -696,7 +697,7 @@ pub mod tests {
     #[test]
     #[allow(clippy::unicode_not_nfc)]
     fn test_unusual_characters() {
-        let (word_list, _word_list_errors) = WordList::new(
+        let word_list = WordList::new(
             vec![WordListSourceConfig::Memory {
                 id: "0".into(),
                 words: vec![
@@ -719,7 +720,7 @@ pub mod tests {
     #[test]
     #[allow(clippy::similar_names)]
     fn test_soft_dupe_index() {
-        let (mut word_list, _word_list_errors) = WordList::new(vec![], Some(6), Some(5));
+        let mut word_list = WordList::new(vec![], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
 
         // This doesn't do anything except make sure it's OK to call this method unboxed
@@ -807,7 +808,7 @@ pub mod tests {
     #[allow(clippy::float_cmp)]
     #[allow(clippy::too_many_lines)]
     fn test_source_management() {
-        let (mut word_list, word_list_errors) = WordList::new(
+        let mut word_list = WordList::new(
             vec![
                 WordListSourceConfig::Memory {
                     id: "0".into(),
@@ -821,7 +822,8 @@ pub mod tests {
             None,
             None,
         );
-        assert!(word_list_errors.is_empty());
+        assert!(word_list.get_source_errors().get("0").unwrap().is_empty());
+        assert!(word_list.get_source_errors().get("1").unwrap().is_empty());
 
         let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
         let wolvvves_id = word_list.get_word_id_or_add_hidden("wolvvves");

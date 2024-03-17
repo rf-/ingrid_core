@@ -77,7 +77,7 @@ fn main() -> Result<(), Error> {
         ));
     }
 
-    let (word_list, word_list_errors) = WordList::new(
+    let word_list = WordList::new(
         vec![match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
                 id: "0".into(),
@@ -92,7 +92,7 @@ fn main() -> Result<(), Error> {
         args.max_shared_substring,
     );
 
-    if let Some(errors) = word_list_errors.into_values().next() {
+    if let Some(errors) = word_list.get_source_errors().into_values().next() {
         return if errors.len() == 1 {
             Err(Error(format!("{}", errors[0])))
         } else {

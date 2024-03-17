@@ -537,8 +537,7 @@ mod tests {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        let (word_list, _word_list_errors) =
-            WordList::new(word_list_source_config(), Some(width.max(height)), Some(5));
+        let word_list = WordList::new(word_list_source_config(), Some(width.max(height)), Some(5));
 
         generate_grid_config_from_template_string(word_list, template, 40.0)
     }
