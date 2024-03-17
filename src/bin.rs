@@ -78,7 +78,7 @@ fn main() -> Result<(), Error> {
     }
 
     let (word_list, word_list_errors) = WordList::new(
-        &[match args.wordlist {
+        vec![match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
                 id: "0".into(),
                 path: wordlist_path.into(),

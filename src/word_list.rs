@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::SystemTime;
 use std::{fmt, fs};
 use unicode_normalization::UnicodeNormalization;
 
@@ -70,7 +71,7 @@ pub fn normalize_word(canonical: &str) -> String {
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WordListError {
     InvalidPath(String),
     InvalidWord(String),
@@ -93,10 +94,10 @@ impl fmt::Display for WordListError {
 }
 
 /// Configuration describing a source of wordlist entries.
-pub enum WordListSourceConfig<'a> {
+pub enum WordListSourceConfig {
     Memory {
         id: String,
-        words: &'a [(String, i32)],
+        words: Vec<(String, i32)>,
     },
     File {
         id: String,
@@ -104,11 +105,43 @@ pub enum WordListSourceConfig<'a> {
     },
     FileContents {
         id: String,
-        contents: &'a str,
+        contents: &'static str,
     },
 }
 
-/// `WordListErrors` keyed by the `id` of the relevant source.
+impl WordListSourceConfig {
+    /// The unique, persistent id of this word list.
+    #[must_use]
+    pub fn id(&self) -> String {
+        match self {
+            WordListSourceConfig::Memory { id, .. }
+            | WordListSourceConfig::FileContents { id, .. }
+            | WordListSourceConfig::File { id, .. } => id.clone(),
+        }
+    }
+
+    /// The last file modification time for this word list, if applicable. If
+    /// this returns `None` the list won't be checked for updates.
+    #[must_use]
+    pub fn modified(&self) -> Option<SystemTime> {
+        match self {
+            WordListSourceConfig::Memory { .. } | WordListSourceConfig::FileContents { .. } => None,
+            WordListSourceConfig::File { path, .. } => fs::metadata(path).ok()?.modified().ok(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WordListSourceState {
+    pub id: String,
+    pub mtime: Option<SystemTime>,
+    pub errors: Vec<WordListError>,
+}
+
+/// `WordListSourceState`s keyed by the `id` of the relevant source.
+pub type WordListSourceStates = HashMap<String, WordListSourceState>;
+
+/// `WordListError`s keyed by the `id` of the relevant source.
 pub type WordListSourceErrors = HashMap<String, Vec<WordListError>>;
 
 /// A single word list entry.
@@ -166,36 +199,33 @@ fn parse_word_list_file_contents(
 fn load_words_from_source(
     source: &WordListSourceConfig,
     source_index: u16,
-    all_errors: &mut WordListSourceErrors,
-) -> Vec<RawWordListEntry> {
-    let source_id;
+) -> (Vec<RawWordListEntry>, WordListSourceState) {
+    let id = source.id();
+    let mtime = source.modified();
     let mut errors = vec![];
+
     let entries = match source {
-        WordListSourceConfig::Memory { id, words, .. } => {
-            source_id = id;
-            words
-                .iter()
-                .cloned()
-                .filter_map(|(canonical, score)| {
-                    let normalized = normalize_word(&canonical);
-                    if normalized.is_empty() {
-                        errors.push(WordListError::InvalidWord(canonical));
-                        return None;
-                    }
+        WordListSourceConfig::Memory { words, .. } => words
+            .iter()
+            .cloned()
+            .filter_map(|(canonical, score)| {
+                let normalized = normalize_word(&canonical);
+                if normalized.is_empty() {
+                    errors.push(WordListError::InvalidWord(canonical));
+                    return None;
+                }
 
-                    Some(RawWordListEntry {
-                        length: normalized.chars().count(),
-                        normalized,
-                        canonical,
-                        score,
-                        source_index: Some(source_index),
-                    })
+                Some(RawWordListEntry {
+                    length: normalized.chars().count(),
+                    normalized,
+                    canonical,
+                    score,
+                    source_index: Some(source_index),
                 })
-                .collect()
-        }
+            })
+            .collect(),
 
-        WordListSourceConfig::File { id, path, .. } => {
-            source_id = id;
+        WordListSourceConfig::File { path, .. } => {
             if let Ok(contents) = fs::read_to_string(path) {
                 parse_word_list_file_contents(&contents, source_index, &mut errors)
             } else {
@@ -204,19 +234,17 @@ fn load_words_from_source(
             }
         }
 
-        WordListSourceConfig::FileContents { id, contents, .. } => {
-            source_id = id;
+        WordListSourceConfig::FileContents { contents, .. } => {
             parse_word_list_file_contents(contents, source_index, &mut errors)
         }
     };
 
-    all_errors.insert(source_id.clone(), errors);
-    entries
+    (entries, WordListSourceState { id, mtime, errors })
 }
 
 fn load_words_from_sources(
     sources: &[WordListSourceConfig],
-) -> (Vec<RawWordListEntry>, WordListSourceErrors) {
+) -> (Vec<RawWordListEntry>, WordListSourceStates) {
     fn hash_str(str: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
         str.hash(&mut hasher);
@@ -227,10 +255,11 @@ fn load_words_from_sources(
 
     let mut seen_words: HashSet<u64> = HashSet::new();
     let mut result = vec![];
-    let mut errors = HashMap::new();
+    let mut states = HashMap::new();
 
     for (source_index, source) in sources.iter().enumerate() {
-        for word in load_words_from_source(source, source_index as u16, &mut errors) {
+        let (words, source_state) = load_words_from_source(source, source_index as u16);
+        for word in words {
             let hash = hash_str(&word.normalized);
             if seen_words.contains(&hash) {
                 continue;
@@ -238,9 +267,10 @@ fn load_words_from_sources(
             result.push(word);
             seen_words.insert(hash);
         }
+        states.insert(source_state.id.clone(), source_state);
     }
 
-    (result, errors)
+    (result, states)
 }
 
 type OnUpdateCallback =
@@ -275,6 +305,12 @@ pub struct WordList {
 
     /// Callback run after adding or removing words.
     pub on_update: Option<OnUpdateCallback>,
+
+    /// The most recently-received word list sources, as an ordered list.
+    pub source_configs: Vec<WordListSourceConfig>,
+
+    /// The last seen state of each word list source, keyed by source id.
+    pub source_states: HashMap<String, WordListSourceState>,
 }
 
 impl WordList {
@@ -283,7 +319,7 @@ impl WordList {
     #[allow(dead_code)]
     #[must_use]
     pub fn new(
-        source_configs: &[WordListSourceConfig],
+        source_configs: Vec<WordListSourceConfig>,
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
     ) -> (WordList, WordListSourceErrors) {
@@ -295,6 +331,8 @@ impl WordList {
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             max_length,
             on_update: None,
+            source_configs: vec![],
+            source_states: HashMap::new(),
         };
 
         let (_added_words, _removed_words, source_errors) =
@@ -391,10 +429,11 @@ impl WordList {
     /// removed words and pass them into the callback.
     pub fn replace_list(
         &mut self,
-        source_configs: &[WordListSourceConfig],
+        source_configs: Vec<WordListSourceConfig>,
         max_length: Option<usize>,
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>, WordListSourceErrors) {
+        self.source_configs = source_configs;
         self.max_length = max_length;
 
         // Start with the assumption that we're removing everything.
@@ -417,7 +456,13 @@ impl WordList {
             }
         }
 
-        let (raw_entries, source_errors) = load_words_from_sources(source_configs);
+        let (raw_entries, source_states) = load_words_from_sources(&self.source_configs);
+
+        let mut source_errors = HashMap::new();
+        for (source_id, source_state) in source_states.iter() {
+            source_errors.insert(source_id.clone(), source_state.errors.clone());
+        }
+        self.source_states = source_states;
 
         // Now go through our new words and add them.
         for raw_entry in raw_entries {
@@ -536,6 +581,24 @@ impl WordList {
             word.source_index = Some(source_index);
         }
     }
+
+    /// If any word lists have been modified since the last time we refreshed, return their ids.
+    pub fn identify_stale_sources(&mut self) -> Vec<String> {
+        self.source_configs
+            .iter()
+            .filter_map(|source_config| {
+                let id = source_config.id();
+                let old_mtime = self.source_states.get(&id).and_then(|state| state.mtime);
+                let new_mtime = source_config.modified();
+
+                if old_mtime.is_some() && new_mtime.is_some() && old_mtime != new_mtime {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 impl Debug for WordList {
@@ -571,7 +634,7 @@ pub mod tests {
     }
 
     #[must_use]
-    pub fn word_list_source_config() -> Vec<WordListSourceConfig<'static>> {
+    pub fn word_list_source_config() -> Vec<WordListSourceConfig> {
         vec![WordListSourceConfig::File {
             id: "0".into(),
             path: dictionary_path().into(),
@@ -583,7 +646,7 @@ pub mod tests {
     #[allow(clippy::float_cmp)]
     fn test_loads_words_up_to_max_length() {
         let (word_list, _word_list_errors) =
-            WordList::new(&word_list_source_config(), Some(5), None);
+            WordList::new(word_list_source_config(), Some(5), None);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 6);
@@ -606,7 +669,7 @@ pub mod tests {
     #[allow(clippy::bool_assert_comparison)]
     fn test_dynamic_max_length() {
         let (mut word_list, _word_list_errors) =
-            WordList::new(&word_list_source_config(), None, None);
+            WordList::new(word_list_source_config(), None, None);
 
         assert_eq!(word_list.max_length, None);
         assert_eq!(word_list.words.len(), 16);
@@ -620,7 +683,7 @@ pub mod tests {
         assert_eq!(word.hidden, false);
         assert_eq!(word.source_index, Some(0));
 
-        word_list.replace_list(&word_list_source_config(), Some(5), false);
+        word_list.replace_list(word_list_source_config(), Some(5), false);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 16);
@@ -634,9 +697,9 @@ pub mod tests {
     #[allow(clippy::unicode_not_nfc)]
     fn test_unusual_characters() {
         let (word_list, _word_list_errors) = WordList::new(
-            &[WordListSourceConfig::Memory {
+            vec![WordListSourceConfig::Memory {
                 id: "0".into(),
-                words: &[
+                words: vec![
                     // Non-English character expressed as one two-byte `char`
                     ("monsutâ".into(), 50),
                     // Non-English character expressed as two chars w/ combining form
@@ -656,7 +719,7 @@ pub mod tests {
     #[test]
     #[allow(clippy::similar_names)]
     fn test_soft_dupe_index() {
-        let (mut word_list, _word_list_errors) = WordList::new(&[], Some(6), Some(5));
+        let (mut word_list, _word_list_errors) = WordList::new(vec![], Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
 
         // This doesn't do anything except make sure it's OK to call this method unboxed
@@ -679,9 +742,9 @@ pub mod tests {
         };
 
         word_list.replace_list(
-            &[WordListSourceConfig::Memory {
+            vec![WordListSourceConfig::Memory {
                 id: "0".into(),
-                words: &[
+                words: vec![
                     ("golf".into(), 0),
                     ("golfy".into(), 0),
                     ("golves".into(), 0),
@@ -745,10 +808,10 @@ pub mod tests {
     #[allow(clippy::too_many_lines)]
     fn test_source_management() {
         let (mut word_list, word_list_errors) = WordList::new(
-            &[
+            vec![
                 WordListSourceConfig::Memory {
                     id: "0".into(),
-                    words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
@@ -809,14 +872,14 @@ pub mod tests {
         }
 
         word_list.replace_list(
-            &[
+            vec![
                 WordListSourceConfig::File {
                     id: "1".into(),
                     path: dictionary_path().into(),
                 },
                 WordListSourceConfig::Memory {
                     id: "0".into(),
-                    words: &[("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
             ],
             None,

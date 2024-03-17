@@ -817,7 +817,7 @@ mod tests {
 
     fn load_word_list(max_length: usize) -> WordList {
         let (word_list, word_list_errors) =
-            WordList::new(&word_list_source_config(), Some(max_length), Some(5));
+            WordList::new(word_list_source_config(), Some(max_length), Some(5));
         assert!(
             word_list_errors.is_empty(),
             "load_word_list: failed to load: {word_list_errors:?}"
@@ -1229,10 +1229,10 @@ mod tests {
         .trim();
 
         let (word_list, _word_list_errors) = WordList::new(
-            &[
+            vec![
                 WordListSourceConfig::Memory {
                     id: "0".into(),
-                    words: &[("monsutâ".into(), 50), ("âbc".into(), 50)],
+                    words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
