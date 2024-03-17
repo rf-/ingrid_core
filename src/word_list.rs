@@ -586,7 +586,8 @@ impl WordList {
     }
 
     /// If any word lists have been modified since the last time we refreshed, return their ids.
-    pub fn identify_stale_sources(&mut self) -> Vec<String> {
+    #[must_use]
+    pub fn identify_stale_sources(&self) -> Vec<String> {
         self.source_configs
             .iter()
             .filter_map(|source_config| {
