@@ -262,8 +262,7 @@ fn load_words_from_source(
     )
 }
 
-type OnUpdateCallback =
-    Box<dyn FnMut(&mut WordList, &[GlobalWordId], &[GlobalWordId]) + Send + Sync>;
+type OnUpdateCallback = Box<dyn FnMut(&mut WordList, &[GlobalWordId]) + Send + Sync>;
 
 /// How urgently we need to sync to disk, if at all. `LowPriority` means we have changes that
 /// exist only in memory; `HighPriority` means `words` may actually be incorrect until we sync.
@@ -316,7 +315,7 @@ pub struct WordList {
     /// The maximum word length provided when configuring the WordList, if any.
     pub max_length: Option<usize>,
 
-    /// Callback run after adding or removing words.
+    /// Callback run after adding words.
     pub on_update: Option<OnUpdateCallback>,
 
     /// The most recently-received word list sources, as an ordered list.
@@ -376,7 +375,7 @@ impl WordList {
     }
 
     /// Add the given word to the list as a hidden entry and trigger the update callback. The word must not be part of the list yet.
-    pub fn add_hidden_word(&mut self, normalized_word: &str) -> GlobalWordId {
+    fn add_hidden_word(&mut self, normalized_word: &str) -> GlobalWordId {
         let global_word_id = self.add_word_silent(
             &RawWordListEntry {
                 length: normalized_word.chars().count(),
@@ -389,7 +388,7 @@ impl WordList {
         );
 
         if let Some(mut on_update) = self.on_update.take() {
-            on_update(self, &[global_word_id], &[]);
+            on_update(self, &[global_word_id]);
             self.on_update = Some(on_update);
         }
 
@@ -441,9 +440,15 @@ impl WordList {
     /// outside perspective, although we don't actually remove any words since we want to
     /// keep word ids stable in case they're referenced elsewhere.
     ///
-    /// We return a boolean indicating whether we added any words, along with a set of removed
-    /// words. If `silent` is false and an `on_update` callback is present, we track both added and
-    /// removed words and pass them into the callback.
+    /// There are two separate mechanisms for tracking changes, with different semantics:
+    ///
+    /// - We return a tuple of a boolean indicating whether any words have either been added,
+    ///   unhidden, or increased in score and a set of the ids of words that have either been
+    ///   hidden or have reduced their score.
+    ///
+    /// - If `silent` is false and an `on_update` callback is present, we track
+    ///   any words that are added to the list (independent of hidden status and score) and
+    ///   pass them into the callback.
     pub fn replace_list(
         &mut self,
         source_configs: Vec<WordListSourceConfig>,
@@ -453,7 +458,9 @@ impl WordList {
         self.source_configs = source_configs;
         self.max_length = max_length;
 
-        // Start with the assumption that we're removing everything.
+        // Start with the assumption that we're removing everything. This is for tracking
+        // which words we haven't seen yet; we'll fill in `less_visible_words_set` more
+        // selectively to be returned to the caller.
         let mut removed_words_set: HashSet<GlobalWordId> = self
             .words
             .iter()
@@ -468,9 +475,10 @@ impl WordList {
                 })
             })
             .collect();
+        let mut less_visible_words_set: HashSet<GlobalWordId> = HashSet::new();
 
-        let mut added_words: Vec<GlobalWordId> = vec![];
-        let mut added_any_words = false;
+        let mut newly_added_words: Vec<GlobalWordId> = vec![];
+        let mut any_more_visible = false;
         let silent = silent || self.on_update.is_none();
 
         // If we were given a max length, make sure we have that many buckets.
@@ -493,11 +501,11 @@ impl WordList {
 
                 if let Some(&existing_word_id) = existing_word_id {
                     let word = &mut word_list.words[word_length][existing_word_id];
-                    if word.hidden {
-                        added_any_words = true;
-                        if !silent {
-                            added_words.push((word_length, existing_word_id));
-                        }
+                    if word.hidden || raw_entry.score as f32 > word.score {
+                        any_more_visible = true;
+                    }
+                    if !word.hidden && (raw_entry.score as f32) < word.score {
+                        less_visible_words_set.insert((word_length, existing_word_id));
                     }
                     word.score = raw_entry.score as f32;
                     word.hidden = false;
@@ -506,11 +514,11 @@ impl WordList {
                     word.shadowed = false;
                     removed_words_set.remove(&(word_length, existing_word_id));
                 } else if !silent {
-                    added_any_words = true;
+                    any_more_visible = true;
                     let added_word_id = word_list.add_word_silent(&raw_entry, false);
-                    added_words.push(added_word_id);
+                    newly_added_words.push(added_word_id);
                 } else {
-                    added_any_words = true;
+                    any_more_visible = true;
                     word_list.add_word_silent(&raw_entry, false);
                 }
             },
@@ -532,18 +540,15 @@ impl WordList {
             self.words[length][word_id].hidden = true;
             self.words[length][word_id].source_index = None;
             self.words[length][word_id].shadowed = false;
+            less_visible_words_set.insert((length, word_id));
         }
 
         if let Some(mut on_update) = self.on_update.take() {
-            on_update(
-                self,
-                &added_words,
-                &removed_words_set.iter().copied().collect::<Vec<_>>(),
-            );
+            on_update(self, &newly_added_words);
             self.on_update = Some(on_update);
         }
 
-        (added_any_words, removed_words_set)
+        (any_more_visible, less_visible_words_set)
     }
 
     fn load_words_from_source_configs(
@@ -953,13 +958,13 @@ impl WordList {
         // Finally, if we've seen evidence that we need to refresh, do so. If any updates
         // failed, their pending changes will get carried over through the refresh,
         // whether or not we can actually load the relevant file.
-        let (added_any, removed_words) = if should_refresh {
+        let (any_more_visible, less_visible_words_set) = if should_refresh {
             self.replace_list(self.source_configs.clone(), self.max_length, false)
         } else {
             (false, HashSet::new())
         };
 
-        (added_any, removed_words, sync_errors)
+        (any_more_visible, less_visible_words_set, sync_errors)
     }
 
     /// For each source provided last time we loaded or updated, return any errors it emitted.
@@ -1123,15 +1128,13 @@ pub mod tests {
         word_list.on_update = {
             let soft_dupe_index = soft_dupe_index.clone();
 
-            Some(Box::new(
-                move |word_list, added_word_ids, _removed_word_ids| {
-                    let mut soft_dupe_index = soft_dupe_index.lock().unwrap();
+            Some(Box::new(move |word_list, added_word_ids| {
+                let mut soft_dupe_index = soft_dupe_index.lock().unwrap();
 
-                    for &(word_length, word_id) in added_word_ids {
-                        soft_dupe_index.add_word(word_id, &word_list.words[word_length][word_id]);
-                    }
-                },
-            ))
+                for &(word_length, word_id) in added_word_ids {
+                    soft_dupe_index.add_word(word_id, &word_list.words[word_length][word_id]);
+                }
+            }))
         };
 
         word_list.replace_list(
@@ -1449,9 +1452,9 @@ pub mod tests {
         }
         assert_eq!(word_list.sync_state, SyncState::LowPriority);
 
-        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(!added_any);
-        assert!(removed_words.is_empty());
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!any_more_visible);
+        assert!(less_visible_words.is_empty());
         assert!(sync_errors.is_empty());
 
         assert_eq!(
@@ -1507,10 +1510,10 @@ pub mod tests {
         assert_eq!(word_list.sync_state, SyncState::HighPriority);
 
         // If we then sync to disk, it will also refresh the list, which will be reflected
-        // in `added_any` since it's undoing the optimistic update.
-        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(added_any);
-        assert_eq!(removed_words, HashSet::new());
+        // in `any_more_visible` since it's undoing the optimistic update.
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(any_more_visible);
+        assert_eq!(less_visible_words, HashSet::new());
         assert!(sync_errors.is_empty());
 
         assert_eq!(
@@ -1566,7 +1569,7 @@ pub mod tests {
         // that we're still ready to sync and have still applied the updates on top of the
         // new file contents.
         fs::write(tmpfile.path(), "wolves;52\nsteev;48\nhejjira;20\n").unwrap();
-        let (added_any, removed_words) = word_list.replace_list(
+        let (any_more_visible, less_visible_words) = word_list.replace_list(
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
@@ -1580,9 +1583,9 @@ pub mod tests {
             None,
             false,
         );
-        assert!(added_any);
+        assert!(any_more_visible);
         assert_eq!(
-            removed_words,
+            less_visible_words,
             HashSet::from([word_list.get_word_id_or_add_hidden("ijsnzlsj")])
         );
         assert_eq!(word_list.sync_state, SyncState::HighPriority);
@@ -1609,10 +1612,10 @@ pub mod tests {
         fs::write(tmpfile.path(), "wolves;53\nsteev;47\nabcdedcba;22").unwrap();
 
         // Now we can sync, merging the in-memory changes with our out-of-band changes.
-        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(added_any);
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(any_more_visible);
         assert_eq!(
-            removed_words,
+            less_visible_words,
             HashSet::from([word_list.get_word_id_or_add_hidden("hejjira")])
         );
         assert!(sync_errors.is_empty());
@@ -1655,9 +1658,9 @@ pub mod tests {
         fs::remove_file(tmpfile.path()).unwrap();
         fs::create_dir(tmpfile.path()).unwrap();
 
-        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(added_any); // the shadowed wolves reappearing
-        assert_eq!(removed_words, HashSet::from([idkidkidk_id]));
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(any_more_visible); // the shadowed wolves reappearing
+        assert_eq!(less_visible_words, HashSet::from([idkidkidk_id]));
         assert_eq!(
             sync_errors.get("0").unwrap().to_string(),
             "Is a directory (os error 21)"
@@ -1670,9 +1673,9 @@ pub mod tests {
         // now it's empty.
         fs::remove_dir(tmpfile.path()).unwrap();
 
-        let (added_any, removed_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(!added_any);
-        assert_eq!(removed_words, HashSet::new());
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!any_more_visible);
+        assert_eq!(less_visible_words, HashSet::new());
         assert!(sync_errors.is_empty());
         assert_eq!(word_list.sync_state, SyncState::Synced);
 
