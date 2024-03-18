@@ -707,19 +707,7 @@ impl WordList {
             self.sync_state = SyncState::LowPriority;
         }
 
-        self.optimistically_update_word_impl(&normalized, canonical, score, source_index);
-    }
-
-    /// Apply an optimistic update to `words`, without adding it to the pending updates or
-    /// modifying `sync_state`.
-    fn optimistically_update_word_impl(
-        &mut self,
-        normalized: &str,
-        canonical: &str,
-        score: i32,
-        source_index: u16,
-    ) {
-        let (length, word_id) = self.get_word_id_or_add_hidden(normalized);
+        let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
         let word = &mut self.words[length][word_id];
         let should_update = word
             .source_index
@@ -765,22 +753,6 @@ impl WordList {
 
         // Now we can mark it as hidden, but if it was shadowed we need to refresh since
         // hiding it may have been incorrect.
-        let result = self.optimistically_delete_word_impl(normalized, source_index);
-        if result == OptimisticDeletionResult::PossiblyIncorrectDeletion
-            && self.sync_state != SyncState::HighPriority
-        {
-            self.sync_state = SyncState::HighPriority;
-        }
-        result
-    }
-
-    /// Apply an optimistic deletion to `words`, without adding it to the pending updates or
-    /// modifying `sync_state`.
-    fn optimistically_delete_word_impl(
-        &mut self,
-        normalized: &str,
-        source_index: u16,
-    ) -> OptimisticDeletionResult {
         let length = normalized.chars().count();
         let Some(&word_id) = self.word_id_by_string.get(normalized) else {
             #[cfg(feature = "check_invariants")]
@@ -804,6 +776,9 @@ impl WordList {
         word.shadowed = false;
 
         if was_shadowed {
+            if self.sync_state != SyncState::HighPriority {
+                self.sync_state = SyncState::HighPriority;
+            }
             OptimisticDeletionResult::PossiblyIncorrectDeletion
         } else {
             OptimisticDeletionResult::CleanDeletion
