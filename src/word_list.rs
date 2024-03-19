@@ -101,14 +101,17 @@ impl fmt::Display for WordListError {
 pub enum WordListSourceConfig {
     Memory {
         id: String,
+        enabled: bool,
         words: Vec<(String, i32)>,
     },
     File {
         id: String,
+        enabled: bool,
         path: OsString,
     },
     FileContents {
         id: String,
+        enabled: bool,
         contents: &'static str,
     },
 }
@@ -121,6 +124,17 @@ impl WordListSourceConfig {
             WordListSourceConfig::Memory { id, .. }
             | WordListSourceConfig::FileContents { id, .. }
             | WordListSourceConfig::File { id, .. } => id.clone(),
+        }
+    }
+
+    /// Whether this list will affect `words`. Lists that aren't enabled don't even add hidden
+    /// entries, but can still be edited and saved.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        match self {
+            WordListSourceConfig::Memory { enabled, .. }
+            | WordListSourceConfig::FileContents { enabled, .. }
+            | WordListSourceConfig::File { enabled, .. } => *enabled,
         }
     }
 
@@ -216,6 +230,14 @@ fn load_words_from_source(
     let mut errors = vec![];
 
     let entries = match source {
+        WordListSourceConfig::Memory { .. }
+        | WordListSourceConfig::File { .. }
+        | WordListSourceConfig::FileContents { .. }
+            if !source.enabled() =>
+        {
+            vec![]
+        }
+
         WordListSourceConfig::Memory { words, .. } => words
             .iter()
             .cloned()
@@ -575,44 +597,52 @@ impl WordList {
         for (source_index, source) in source_configs.iter().enumerate() {
             let (words, mut new_state) = load_words_from_source(source, source_index as u16);
 
+            // Any pending updates should be carried over from the old state to the new state.
+            let old_state = source_states.remove(&new_state.id);
+            if let Some(old_state) = old_state {
+                new_state.pending_updates = old_state.pending_updates;
+            }
+
+            // If the source is disabled, none of its words (or pending updates) should affect the
+            // actual wordlist.
+            if !source.enabled() {
+                new_states.insert(new_state.id.clone(), new_state);
+                continue;
+            }
+
             let mut words_iter: Box<dyn Iterator<Item = RawWordListEntry>> =
                 Box::new(words.into_iter());
 
-            // If there are any pending updates on the old state, they take priority over
-            // the list as stored. We'll also bring them over to the new state unchanged.
-            let old_state = source_states.remove(&new_state.id);
+            // If there are any pending updates, they take priority over the list items as stored.
             let mut updated_words: Vec<RawWordListEntry> = vec![];
-            if let Some(old_state) = old_state {
-                if !old_state.pending_updates.is_empty() {
-                    let mut superseded_words = HashSet::new();
+            if !new_state.pending_updates.is_empty() {
+                let mut superseded_words = HashSet::new();
 
-                    for (normalized, pending_update) in &old_state.pending_updates {
-                        superseded_words.insert(normalized.clone());
+                for (normalized, pending_update) in &new_state.pending_updates {
+                    superseded_words.insert(normalized.clone());
 
-                        if let PendingWordListUpdate::AddOrUpdate { canonical, score } =
-                            pending_update
-                        {
-                            updated_words.push(RawWordListEntry {
-                                length: normalized.chars().count(),
-                                normalized: normalized.clone(),
-                                canonical: canonical.clone(),
-                                score: *score,
-                                source_index: Some(source_index as u16),
-                            });
-                        }
+                    if let PendingWordListUpdate::AddOrUpdate { canonical, score } = pending_update
+                    {
+                        updated_words.push(RawWordListEntry {
+                            length: normalized.chars().count(),
+                            normalized: normalized.clone(),
+                            canonical: canonical.clone(),
+                            score: *score,
+                            source_index: Some(source_index as u16),
+                        });
                     }
-
-                    words_iter = Box::new(
-                        words_iter.filter(move |word| !superseded_words.contains(&word.normalized)),
-                    );
                 }
 
-                new_state.pending_updates = old_state.pending_updates;
+                words_iter = Box::new(
+                    words_iter.filter(move |word| !superseded_words.contains(&word.normalized)),
+                );
             }
 
             for word in updated_words.into_iter().chain(words_iter) {
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
+                    // Technically this is wrong, since a word could be shadowed by a duplicate
+                    // entry in the same wordlist file, but it's not a big deal.
                     mark_as_shadowed(self, word);
                     continue;
                 }
@@ -691,7 +721,8 @@ impl WordList {
 
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_id = self.source_configs[source_index as usize].id();
+        let source_config = &self.source_configs[source_index as usize];
+        let source_id = source_config.id();
         if let Some(source_state) = self.source_states.get_mut(&source_id) {
             source_state.pending_updates.insert(
                 normalized.clone(),
@@ -705,6 +736,11 @@ impl WordList {
         }
         if self.sync_state == SyncState::Synced {
             self.sync_state = SyncState::LowPriority;
+        }
+
+        // If the source is disabled, we don't need to update the actual wordlist.
+        if !source_config.enabled() {
+            return;
         }
 
         let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
@@ -739,7 +775,8 @@ impl WordList {
     ) -> OptimisticDeletionResult {
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_id = self.source_configs[source_index as usize].id();
+        let source_config = &self.source_configs[source_index as usize];
+        let source_id = source_config.id();
         if let Some(source_state) = self.source_states.get_mut(&source_id) {
             source_state
                 .pending_updates
@@ -749,6 +786,11 @@ impl WordList {
         }
         if self.sync_state == SyncState::Synced {
             self.sync_state = SyncState::LowPriority;
+        }
+
+        // If the source is disabled, we don't need to update the actual wordlist.
+        if !source_config.enabled() {
+            return OptimisticDeletionResult::NoChange;
         }
 
         // Now we can mark it as hidden, but if it was shadowed we need to refresh since
@@ -802,11 +844,11 @@ impl WordList {
 
             let source_config = &self.source_configs[source_state.source_index as usize];
 
-            // If the file was updated externally since the last time we reloaded it,
-            // there's no problem with this process since we'd read it from disk either
-            // way, but we'll definitely need to do a full refresh of the word list when
-            // we're done syncing.
-            if source_state.mtime != source_config.modified() {
+            // If the file was updated externally since the last time we reloaded it, there's no
+            // problem with this process since we'd read it from disk either way, but unless it's
+            // disabled we'll definitely need to do a full refresh of the word list when we're done
+            // syncing.
+            if source_config.enabled() && source_state.mtime != source_config.modified() {
                 should_refresh = true;
             }
 
@@ -1016,6 +1058,7 @@ pub mod tests {
     pub fn word_list_source_config() -> Vec<WordListSourceConfig> {
         vec![WordListSourceConfig::File {
             id: "0".into(),
+            enabled: true,
             path: dictionary_path().into(),
         }]
     }
@@ -1073,6 +1116,7 @@ pub mod tests {
         let word_list = WordList::new(
             vec![WordListSourceConfig::Memory {
                 id: "0".into(),
+                enabled: true,
                 words: vec![
                     // Non-English character expressed as one two-byte `char`
                     ("monsutâ".into(), 50),
@@ -1115,6 +1159,7 @@ pub mod tests {
         word_list.replace_list(
             vec![WordListSourceConfig::Memory {
                 id: "0".into(),
+                enabled: true,
                 words: vec![
                     ("golf".into(), 0),
                     ("golfy".into(), 0),
@@ -1179,10 +1224,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::Memory {
                     id: "0".into(),
+                    enabled: true,
                     words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
@@ -1272,10 +1319,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
                 WordListSourceConfig::Memory {
                     id: "0".into(),
+                    enabled: true,
                     words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                 },
             ],
@@ -1358,14 +1407,17 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
+                    enabled: true,
                     path: tmpfile_1.path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "2".into(),
+                    enabled: true,
                     path: tmpfile_2.path().into(),
                 },
             ],
@@ -1451,10 +1503,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
+                    enabled: true,
                     path: tmpfile_1.path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
@@ -1506,10 +1560,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
+                    enabled: true,
                     path: tmpfile.path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
@@ -1548,10 +1604,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
+                    enabled: true,
                     path: tmpfile.path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
@@ -1611,10 +1669,12 @@ pub mod tests {
             vec![
                 WordListSourceConfig::File {
                     id: "0".into(),
+                    enabled: true,
                     path: tmpfile.path().into(),
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
@@ -1655,5 +1715,142 @@ pub mod tests {
         assert_eq!(word_list.sync_state, SyncState::Synced);
 
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "Steev;55\n");
+    }
+
+    #[test]
+    fn test_word_list_update_disabled_list() {
+        let tmpfile = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile.path(), "wolves;51\nsteev;54\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    enabled: false,
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    enabled: true,
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+        let steev_id = word_list.get_word_id_or_add_hidden("steev");
+
+        // The disabled list doesn't affect the actual word list.
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(1));
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.hidden, true);
+            assert_eq!(steev.source_index, None);
+        }
+
+        // Optimistic updates elevate the sync state but still don't affect the actual word list.
+        word_list.optimistically_delete_word("wolves", 0);
+        word_list.optimistically_update_word("sT eev", 51, 0);
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(1));
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.hidden, true);
+            assert_eq!(steev.source_index, None);
+        }
+        // The priority is low even though we deleted a word that appears in a lower-priority
+        // source, since it wasn't actually shadowed, since we didn't get it from this list.
+        assert_eq!(word_list.sync_state, SyncState::LowPriority);
+
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!any_more_visible);
+        assert!(less_visible_words.is_empty());
+        assert!(sync_errors.is_empty());
+
+        assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
+    }
+
+    #[test]
+    fn test_word_list_update_disabled_list_and_reenable() {
+        let tmpfile = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmpfile.path(), "wolves;51\nsteev;54\n").unwrap();
+
+        let mut word_list = WordList::new(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    enabled: false,
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    enabled: true,
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            None,
+        );
+        let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
+        let steev_id = word_list.get_word_id_or_add_hidden("steev");
+
+        // This is like the last one, except that between updating the list and syncing it we
+        // re-enable it. This applies the buffered changes to the resulting word list.
+        word_list.optimistically_delete_word("wolves", 0);
+        word_list.optimistically_update_word("sT eev", 51, 0);
+        assert_eq!(word_list.sync_state, SyncState::LowPriority);
+
+        let (any_more_visible, less_visible_words) = word_list.replace_list(
+            vec![
+                WordListSourceConfig::File {
+                    id: "0".into(),
+                    enabled: true,
+                    path: tmpfile.path().into(),
+                },
+                WordListSourceConfig::File {
+                    id: "1".into(),
+                    enabled: true,
+                    path: dictionary_path().into(),
+                },
+            ],
+            None,
+            false,
+        );
+        assert!(any_more_visible); // steev
+        assert!(less_visible_words.is_empty());
+        {
+            let wolves = word_list.get_word(wolves_id);
+            assert_eq!(wolves.score, 50.0);
+            assert_eq!(wolves.hidden, false);
+            assert_eq!(wolves.source_index, Some(1));
+            assert_eq!(wolves.shadowed, false);
+        }
+        {
+            let steev = word_list.get_word(steev_id);
+            assert_eq!(steev.score, 51.0);
+            assert_eq!(steev.hidden, false);
+            assert_eq!(steev.source_index, Some(0));
+            assert_eq!(steev.shadowed, false);
+        }
+
+        // Now do the actual sync.
+        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!any_more_visible);
+        assert!(less_visible_words.is_empty());
+        assert!(sync_errors.is_empty());
+
+        assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
     }
 }

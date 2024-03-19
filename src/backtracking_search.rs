@@ -1232,10 +1232,12 @@ mod tests {
             vec![
                 WordListSourceConfig::Memory {
                     id: "0".into(),
+                    enabled: true,
                     words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
+                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],

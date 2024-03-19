@@ -81,10 +81,12 @@ fn main() -> Result<(), Error> {
         vec![match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
                 id: "0".into(),
+                enabled: true,
                 path: wordlist_path.into(),
             },
             None => WordListSourceConfig::FileContents {
                 id: "0".into(),
+                enabled: true,
                 contents: STWL_RAW,
             },
         }],
