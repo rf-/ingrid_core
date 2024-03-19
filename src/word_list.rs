@@ -713,15 +713,19 @@ impl WordList {
     /// the given source. This never requires a refresh, since we either add a
     /// previously-unknown word, update or shadow an existing definition, or just ignore the
     /// update if it would be shadowed.
-    pub fn optimistically_update_word(&mut self, canonical: &str, score: i32, source_index: u16) {
+    pub fn optimistically_update_word(&mut self, canonical: &str, score: i32, source_id: &str) {
         let normalized = normalize_word(canonical);
         if normalized.is_empty() {
             return;
         }
 
+        let Some(source_index) = self.find_source_index_for_id(source_id) else {
+            return;
+        };
+        let source_config = &self.source_configs[source_index as usize];
+
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_config = &self.source_configs[source_index as usize];
         let source_id = source_config.id();
         if let Some(source_state) = self.source_states.get_mut(&source_id) {
             source_state.pending_updates.insert(
@@ -771,11 +775,15 @@ impl WordList {
     pub fn optimistically_delete_word(
         &mut self,
         normalized: &str,
-        source_index: u16,
+        source_id: &str,
     ) -> OptimisticDeletionResult {
+        let Some(source_index) = self.find_source_index_for_id(source_id) else {
+            return OptimisticDeletionResult::NoChange;
+        };
+        let source_config = &self.source_configs[source_index as usize];
+
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_config = &self.source_configs[source_index as usize];
         let source_id = source_config.id();
         if let Some(source_state) = self.source_states.get_mut(&source_id) {
             source_state
@@ -825,6 +833,19 @@ impl WordList {
         } else {
             OptimisticDeletionResult::CleanDeletion
         }
+    }
+
+    fn find_source_index_for_id(&self, source_id: &str) -> Option<u16> {
+        self.source_configs
+            .iter()
+            .enumerate()
+            .find_map(|(index, config)| {
+                if config.id() == source_id {
+                    Some(index as u16)
+                } else {
+                    None
+                }
+            })
     }
 
     /// If there are any pending updates, write them to disk. Refresh all sources if needed. If any
@@ -1265,9 +1286,9 @@ pub mod tests {
             assert_eq!(wharves.shadowed, false);
         }
 
-        word_list.optimistically_update_word("wolves", 72, 0);
-        word_list.optimistically_update_word("wharves", 73, 0);
-        word_list.optimistically_update_word("worfs", 74, 0);
+        word_list.optimistically_update_word("wolves", 72, "0");
+        word_list.optimistically_update_word("wharves", 73, "0");
+        word_list.optimistically_update_word("worfs", 74, "0");
 
         let worfs_id = word_list.get_word_id_or_add_hidden("worfs");
 
@@ -1294,11 +1315,11 @@ pub mod tests {
         }
 
         assert_eq!(
-            word_list.optimistically_delete_word("wolves", 0),
+            word_list.optimistically_delete_word("wolves", "0"),
             OptimisticDeletionResult::PossiblyIncorrectDeletion
         );
         assert_eq!(
-            word_list.optimistically_delete_word("worfs", 0),
+            word_list.optimistically_delete_word("worfs", "0"),
             OptimisticDeletionResult::CleanDeletion
         );
 
@@ -1360,10 +1381,10 @@ pub mod tests {
             assert_eq!(worfs.shadowed, false);
         }
 
-        word_list.optimistically_update_word("wolves", 80, 1);
-        word_list.optimistically_update_word("wolvvves", 81, 1);
-        word_list.optimistically_update_word("wharves", 82, 1);
-        word_list.optimistically_update_word("worfs", 83, 1);
+        word_list.optimistically_update_word("wolves", 80, "0");
+        word_list.optimistically_update_word("wolvvves", 81, "0");
+        word_list.optimistically_update_word("wharves", 82, "0");
+        word_list.optimistically_update_word("worfs", 83, "0");
 
         {
             let wolves = word_list.get_word(wolves_id);
@@ -1450,10 +1471,10 @@ pub mod tests {
             assert_eq!(what.shadowed, false);
         }
 
-        word_list.optimistically_update_word("wOl vEs", 60, 0);
-        word_list.optimistically_delete_word("steev", 0);
-        word_list.optimistically_update_word("Wolves", 99, 2);
-        word_list.optimistically_update_word("tonberry", 30, 2);
+        word_list.optimistically_update_word("wOl vEs", 60, "0");
+        word_list.optimistically_delete_word("steev", "0");
+        word_list.optimistically_update_word("Wolves", 99, "2");
+        word_list.optimistically_update_word("tonberry", 30, "2");
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wOl vEs");
@@ -1527,7 +1548,7 @@ pub mod tests {
 
         // Since "wolves" is shadowed, if we delete it we'll be in an inconsistent state,
         // so the `sync_state` needs to reflect that.
-        word_list.optimistically_delete_word("wolves", 0);
+        word_list.optimistically_delete_word("wolves", "0");
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
@@ -1576,8 +1597,8 @@ pub mod tests {
         let steev_id = word_list.get_word_id_or_add_hidden("steev");
 
         // See previous test
-        word_list.optimistically_delete_word("wolves", 0);
-        word_list.optimistically_update_word("Steev", 55, 0);
+        word_list.optimistically_delete_word("wolves", "0");
+        word_list.optimistically_update_word("Steev", 55, "0");
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
@@ -1684,8 +1705,8 @@ pub mod tests {
         let idkidkidk_id = word_list.get_word_id_or_add_hidden("idkidkidk");
 
         // See previous tests
-        word_list.optimistically_delete_word("wolves", 0);
-        word_list.optimistically_update_word("Steev", 55, 0);
+        word_list.optimistically_delete_word("wolves", "0");
+        word_list.optimistically_update_word("Steev", 55, "0");
         assert_eq!(word_list.sync_state, SyncState::HighPriority);
 
         // If we replace the tempfile with a directory, it will be impossible to sync to
@@ -1756,8 +1777,8 @@ pub mod tests {
         }
 
         // Optimistic updates elevate the sync state but still don't affect the actual word list.
-        word_list.optimistically_delete_word("wolves", 0);
-        word_list.optimistically_update_word("sT eev", 51, 0);
+        word_list.optimistically_delete_word("wolves", "0");
+        word_list.optimistically_update_word("sT eev", 51, "0");
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.score, 50.0);
@@ -1808,8 +1829,8 @@ pub mod tests {
 
         // This is like the last one, except that between updating the list and syncing it we
         // re-enable it. This applies the buffered changes to the resulting word list.
-        word_list.optimistically_delete_word("wolves", 0);
-        word_list.optimistically_update_word("sT eev", 51, 0);
+        word_list.optimistically_delete_word("wolves", "0");
+        word_list.optimistically_update_word("sT eev", 51, "0");
         assert_eq!(word_list.sync_state, SyncState::LowPriority);
 
         let (any_more_visible, less_visible_words) = word_list.replace_list(
