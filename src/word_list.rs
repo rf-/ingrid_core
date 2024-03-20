@@ -848,12 +848,11 @@ impl WordList {
             })
     }
 
-    /// If there are any pending updates, write them to disk. Refresh all sources if needed. If any
-    /// pending updates can't be written (probably due to something like permissions issues or a
-    /// drive not being mounted), return error info, reset `sync_state` to `Synced`, and keep the
-    /// pending updates in place. Also returns the same data as `replace_list` since it may need to
-    /// refresh.
-    pub fn sync_updates_to_disk(&mut self) -> (bool, HashSet<GlobalWordId>, SyncErrors) {
+    /// If there are any pending updates, write them to disk. Return a flag indicating whether we
+    /// need to refresh the word lists. If any pending updates can't be written (probably due to
+    /// something like permissions issues or a drive not being mounted), return error info, reset
+    /// `sync_state` to `Synced`, and keep the pending updates in place.
+    pub fn sync_updates_to_disk(&mut self) -> (bool, SyncErrors) {
         let mut should_refresh = self.sync_state == SyncState::HighPriority;
         let mut sync_errors: SyncErrors = HashMap::new();
 
@@ -993,16 +992,13 @@ impl WordList {
         // pending updates are still present.
         self.sync_state = SyncState::Synced;
 
-        // Finally, if we've seen evidence that we need to refresh, do so. If any updates
-        // failed, their pending changes will get carried over through the refresh,
-        // whether or not we can actually load the relevant file.
-        let (any_more_visible, less_visible_words_set) = if should_refresh {
-            self.replace_list(self.source_configs.clone(), self.max_length, false)
-        } else {
-            (false, HashSet::new())
-        };
+        (should_refresh, sync_errors)
+    }
 
-        (any_more_visible, less_visible_words_set, sync_errors)
+    /// Reload the word list(s) using the current config. Returns the same information as
+    /// `replace_list`.
+    pub fn refresh_from_disk(&mut self) -> (bool, HashSet<GlobalWordId>) {
+        self.replace_list(self.source_configs.clone(), self.max_length, false)
     }
 
     /// For each source provided last time we loaded or updated, return any errors it emitted.
@@ -1500,10 +1496,13 @@ pub mod tests {
         }
         assert_eq!(word_list.sync_state, SyncState::LowPriority);
 
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!should_refresh);
+        assert!(sync_errors.is_empty());
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
         assert!(!any_more_visible);
         assert!(less_visible_words.is_empty());
-        assert!(sync_errors.is_empty());
 
         assert_eq!(
             fs::read_to_string(tmpfile_1.path()).unwrap(),
@@ -1561,10 +1560,13 @@ pub mod tests {
 
         // If we then sync to disk, it will also refresh the list, which will be reflected
         // in `any_more_visible` since it's undoing the optimistic update.
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(should_refresh);
+        assert!(sync_errors.is_empty());
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
         assert!(any_more_visible);
         assert_eq!(less_visible_words, HashSet::new());
-        assert!(sync_errors.is_empty());
 
         assert_eq!(
             fs::read_to_string(tmpfile_1.path()).unwrap(),
@@ -1666,14 +1668,17 @@ pub mod tests {
         fs::write(tmpfile.path(), "wolves;53\nsteev;47\nabcdedcba;22").unwrap();
 
         // Now we can sync, merging the in-memory changes with our out-of-band changes.
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(should_refresh);
+        assert!(sync_errors.is_empty());
+        assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
         assert!(any_more_visible);
         assert_eq!(
             less_visible_words,
             HashSet::from([word_list.get_word_id_or_add_hidden("hejjira")])
         );
-        assert!(sync_errors.is_empty());
-        assert_eq!(word_list.sync_state, SyncState::Synced);
 
         assert_eq!(
             fs::read_to_string(tmpfile.path()).unwrap(),
@@ -1714,14 +1719,17 @@ pub mod tests {
         fs::remove_file(tmpfile.path()).unwrap();
         fs::create_dir(tmpfile.path()).unwrap();
 
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(any_more_visible); // the shadowed wolves reappearing
-        assert_eq!(less_visible_words, HashSet::from([idkidkidk_id]));
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(should_refresh);
         assert_eq!(
             sync_errors.get("0").unwrap().to_string(),
             "Is a directory (os error 21)"
         );
         assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
+        assert!(any_more_visible); // the shadowed wolves reappearing
+        assert_eq!(less_visible_words, HashSet::from([idkidkidk_id]));
 
         // Now, if we remove the directory, we should be able to write the updates to a
         // new file in the same location. Note that `idkidkidk` is gone though, since we
@@ -1729,11 +1737,14 @@ pub mod tests {
         // now it's empty.
         fs::remove_dir(tmpfile.path()).unwrap();
 
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
-        assert!(!any_more_visible);
-        assert_eq!(less_visible_words, HashSet::new());
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(should_refresh);
         assert!(sync_errors.is_empty());
         assert_eq!(word_list.sync_state, SyncState::Synced);
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
+        assert!(!any_more_visible);
+        assert_eq!(less_visible_words, HashSet::new());
 
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "Steev;55\n");
     }
@@ -1795,10 +1806,13 @@ pub mod tests {
         // source, since it wasn't actually shadowed, since we didn't get it from this list.
         assert_eq!(word_list.sync_state, SyncState::LowPriority);
 
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!should_refresh);
+        assert!(sync_errors.is_empty());
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
         assert!(!any_more_visible);
         assert!(less_visible_words.is_empty());
-        assert!(sync_errors.is_empty());
 
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
     }
@@ -1867,10 +1881,13 @@ pub mod tests {
         }
 
         // Now do the actual sync.
-        let (any_more_visible, less_visible_words, sync_errors) = word_list.sync_updates_to_disk();
+        let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
+        assert!(!should_refresh);
+        assert!(sync_errors.is_empty());
+
+        let (any_more_visible, less_visible_words) = word_list.refresh_from_disk();
         assert!(!any_more_visible);
         assert!(less_visible_words.is_empty());
-        assert!(sync_errors.is_empty());
 
         assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "sT eev;51\n");
     }
