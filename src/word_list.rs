@@ -296,7 +296,7 @@ pub enum SyncState {
 }
 
 /// Errors that can arise when syncing to disk, keyed by the relevant source id.
-type SyncErrors = HashMap<String, io::Error>;
+pub type SyncErrors = HashMap<String, io::Error>;
 
 /// Result of a call to `optimistically_delete_word`.
 #[derive(Debug, PartialEq, Eq)]
