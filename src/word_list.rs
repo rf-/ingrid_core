@@ -511,14 +511,9 @@ impl WordList {
         }
 
         self.load_words_from_source_configs(
+            max_length,
             |word_list, raw_entry| {
                 let word_length = raw_entry.length;
-                if let Some(max_length) = max_length {
-                    if word_length > max_length {
-                        return;
-                    }
-                }
-
                 let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
 
                 if let Some(&existing_word_id) = existing_word_id {
@@ -575,6 +570,7 @@ impl WordList {
 
     fn load_words_from_source_configs(
         &mut self,
+        max_length: Option<usize>,
         mut add_word: impl FnMut(&mut WordList, RawWordListEntry),
         mut mark_as_shadowed: impl FnMut(&mut WordList, RawWordListEntry),
     ) {
@@ -639,6 +635,11 @@ impl WordList {
             }
 
             for word in updated_words.into_iter().chain(words_iter) {
+                if let Some(max_length) = max_length {
+                    if word.length > max_length {
+                        continue;
+                    }
+                }
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
                     // Technically this is wrong, since a word could be shadowed by a duplicate
