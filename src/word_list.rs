@@ -171,7 +171,7 @@ pub type WordListSourceStates = HashMap<String, WordListSourceState>;
 /// A single word list entry.
 #[allow(dead_code)]
 #[derive(Debug)]
-struct RawWordListEntry {
+pub struct RawWordListEntry {
     pub length: usize,
     pub normalized: String,
     pub canonical: String,
@@ -221,7 +221,7 @@ fn parse_word_list_file_contents(
         .collect()
 }
 
-fn load_words_from_source(
+pub fn load_words_from_source(
     source: &WordListSourceConfig,
     source_index: u16,
 ) -> (Vec<RawWordListEntry>, WordListSourceState) {
