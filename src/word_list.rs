@@ -221,6 +221,7 @@ fn parse_word_list_file_contents(
         .collect()
 }
 
+#[must_use]
 pub fn load_words_from_source(
     source: &WordListSourceConfig,
     source_index: u16,
