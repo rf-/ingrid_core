@@ -90,6 +90,7 @@ fn main() -> Result<(), Error> {
                 contents: STWL_RAW,
             },
         }],
+        None,
         Some(max_side),
         args.max_shared_substring,
     );

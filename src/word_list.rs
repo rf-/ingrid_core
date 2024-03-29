@@ -61,6 +61,9 @@ pub struct Word {
 
     /// Does the word also appear in any lower-priority lists than the one it came from?
     pub shadowed: bool,
+
+    // If we specified a personal list in config, the score from that list.
+    pub personal_word_score: Option<u16>,
 }
 
 /// Given a canonical word string from a dictionary file, turn it into the normalized form we'll
@@ -344,6 +347,9 @@ pub struct WordList {
     /// The most recently-received word list sources, as an ordered list.
     pub source_configs: Vec<WordListSourceConfig>,
 
+    /// If applicable, the index of the source that should be treated as the personal list.
+    pub personal_list_index: Option<u16>,
+
     /// The last seen state of each word list source, keyed by source id.
     pub source_states: HashMap<String, WordListSourceState>,
 
@@ -352,12 +358,13 @@ pub struct WordList {
 }
 
 impl WordList {
-    /// Construct a new `WordList` using the given sources (omitting any entries that are longer than
-    /// `max_length`).
+    /// Construct a new `WordList` using the given sources (omitting any entries that are longer
+    /// than `max_length`).
     #[allow(dead_code)]
     #[must_use]
     pub fn new(
         source_configs: Vec<WordListSourceConfig>,
+        personal_list_index: Option<u16>,
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
     ) -> WordList {
@@ -370,11 +377,12 @@ impl WordList {
             max_length,
             on_update: None,
             source_configs: vec![],
+            personal_list_index,
             source_states: HashMap::new(),
             sync_state: SyncState::Synced,
         };
 
-        instance.replace_list(source_configs, max_length, false);
+        instance.replace_list(source_configs, personal_list_index, max_length, false);
 
         instance
     }
@@ -397,7 +405,8 @@ impl WordList {
         &self.words[global_word_id.0][global_word_id.1]
     }
 
-    /// Add the given word to the list as a hidden entry and trigger the update callback. The word must not be part of the list yet.
+    /// Add the given word to the list as a hidden entry and trigger the update callback. The word
+    /// must not be part of the list yet.
     fn add_hidden_word(&mut self, normalized_word: &str) -> GlobalWordId {
         let global_word_id = self.add_word_silent(
             &RawWordListEntry {
@@ -418,7 +427,8 @@ impl WordList {
         global_word_id
     }
 
-    /// Add the given word to the list without triggering the update callback. The word must not be part of the list yet.
+    /// Add the given word to the list without triggering the update callback. The word must not be
+    /// part of the list yet.
     fn add_word_silent(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
         let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
             .normalized
@@ -448,6 +458,14 @@ impl WordList {
             hidden,
             source_index: raw_entry.source_index,
             shadowed: false,
+            personal_word_score: if self
+                .personal_list_index
+                .map_or(false, |idx| Some(idx) == raw_entry.source_index)
+            {
+                Some(raw_entry.score)
+            } else {
+                None
+            },
         });
 
         self.word_id_by_string
@@ -475,10 +493,12 @@ impl WordList {
     pub fn replace_list(
         &mut self,
         source_configs: Vec<WordListSourceConfig>,
+        personal_list_index: Option<u16>,
         max_length: Option<usize>,
         silent: bool,
     ) -> (bool, HashSet<GlobalWordId>) {
         self.source_configs = source_configs;
+        self.personal_list_index = personal_list_index;
         self.max_length = max_length;
 
         // Start with the assumption that we're removing everything. This is for tracking
@@ -511,6 +531,8 @@ impl WordList {
             }
         }
 
+        let mut hidden_personal_scores: HashMap<GlobalWordId, u16> = HashMap::new();
+
         self.load_words_from_source_configs(
             max_length,
             |word_list, raw_entry| {
@@ -530,6 +552,13 @@ impl WordList {
                     word.canonical_string = raw_entry.canonical.clone();
                     word.source_index = raw_entry.source_index;
                     word.shadowed = false;
+                    word.personal_word_score = if personal_list_index
+                        .map_or(false, |idx| Some(idx) == raw_entry.source_index)
+                    {
+                        Some(raw_entry.score)
+                    } else {
+                        None
+                    };
                     removed_words_set.remove(&(word_length, existing_word_id));
                 } else if !silent {
                     any_more_visible = true;
@@ -546,19 +575,34 @@ impl WordList {
                 if let Some(&existing_word_id) = existing_word_id {
                     let word = &mut word_list.words[raw_entry.length][existing_word_id];
                     word.shadowed = true;
+                    if personal_list_index.map_or(false, |idx| Some(idx) == raw_entry.source_index)
+                    {
+                        word.personal_word_score = Some(raw_entry.score);
+                    };
                 } else {
                     #[cfg(feature = "check_invariants")]
-                    panic!("replace_list: called mark_as_shadowed without existing word");
+                    panic!("replace_list: called handle_shadowed_entry without existing word");
                 }
+            },
+            |word_list, raw_entry| {
+                let word_id = word_list.get_word_id_or_add_hidden(&raw_entry.normalized);
+                hidden_personal_scores.insert(word_id, raw_entry.score);
             },
         );
 
-        // Finally, hide any words that were in our existing list but aren't in the new one.
+        // Hide any words that were in our existing list but aren't in the new one.
         for &(length, word_id) in &removed_words_set {
             self.words[length][word_id].hidden = true;
             self.words[length][word_id].source_index = None;
             self.words[length][word_id].shadowed = false;
+            self.words[length][word_id].personal_word_score = None;
             less_visible_words_set.insert((length, word_id));
+        }
+
+        // Finally, if the personal word list is disabled, set the `personal_word_score` field on
+        // all words it contains. (If it's enabled, it'll have been handled in the main loop.)
+        for ((length, word_id), score) in hidden_personal_scores {
+            self.words[length][word_id].personal_word_score = Some(score);
         }
 
         if let Some(mut on_update) = self.on_update.take() {
@@ -573,7 +617,8 @@ impl WordList {
         &mut self,
         max_length: Option<usize>,
         mut add_word: impl FnMut(&mut WordList, RawWordListEntry),
-        mut mark_as_shadowed: impl FnMut(&mut WordList, RawWordListEntry),
+        mut handle_shadowed_entry: impl FnMut(&mut WordList, RawWordListEntry),
+        mut handle_disabled_personal_entry: impl FnMut(&mut WordList, RawWordListEntry),
     ) {
         fn hash_str(str: &str) -> u64 {
             let mut hasher = DefaultHasher::new();
@@ -592,6 +637,12 @@ impl WordList {
         let mut new_states = HashMap::new();
 
         for (source_index, source) in source_configs.iter().enumerate() {
+            let is_source_enabled = source.enabled();
+            let is_personal_list = self
+                .personal_list_index
+                .map_or(false, |idx| idx == (source_index as u16));
+
+            // TODO: Avoid actually loading/parsing list if disabled.
             let (words, mut new_state) = load_words_from_source(source, source_index as u16);
 
             // Any pending updates should be carried over from the old state to the new state.
@@ -601,8 +652,9 @@ impl WordList {
             }
 
             // If the source is disabled, none of its words (or pending updates) should affect the
-            // actual wordlist.
-            if !source.enabled() {
+            // actual wordlist. The exception is if this is the personal word list, in which case
+            // we still need to process it to populate the `personal_word_score` fields.
+            if !is_source_enabled && !is_personal_list {
                 new_states.insert(new_state.id.clone(), new_state);
                 continue;
             }
@@ -641,11 +693,15 @@ impl WordList {
                         continue;
                     }
                 }
+                if !is_source_enabled && is_personal_list {
+                    handle_disabled_personal_entry(self, word);
+                    continue;
+                }
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
                     // Technically this is wrong, since a word could be shadowed by a duplicate
                     // entry in the same wordlist file, but it's not a big deal.
-                    mark_as_shadowed(self, word);
+                    handle_shadowed_entry(self, word);
                     continue;
                 }
                 add_word(self, word);
@@ -725,6 +781,9 @@ impl WordList {
             return;
         };
         let source_config = &self.source_configs[source_index as usize];
+        let is_personal_list = self
+            .personal_list_index
+            .map_or(false, |idx| idx == source_index);
 
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
@@ -744,13 +803,23 @@ impl WordList {
             self.sync_state = SyncState::LowPriority;
         }
 
-        // If the source is disabled, we don't need to update the actual wordlist.
+        // If the source is disabled, we don't need to update the actual wordlist, except to set
+        // `personal_word_score` if applicable.
         if !source_config.enabled() {
+            if is_personal_list {
+                let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
+                self.words[length][word_id].personal_word_score = Some(score);
+            }
             return;
         }
 
         let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
         let word = &mut self.words[length][word_id];
+
+        if is_personal_list {
+            word.personal_word_score = Some(score);
+        }
+
         let should_update = word
             .source_index
             .map_or(true, |existing_index| source_index <= existing_index);
@@ -783,6 +852,9 @@ impl WordList {
             return OptimisticDeletionResult::NoChange;
         };
         let source_config = &self.source_configs[source_index as usize];
+        let is_personal_list = self
+            .personal_list_index
+            .map_or(false, |idx| idx == source_index);
 
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
@@ -798,8 +870,14 @@ impl WordList {
             self.sync_state = SyncState::LowPriority;
         }
 
-        // If the source is disabled, we don't need to update the actual wordlist.
+        // If the source is disabled, we don't need to update the actual wordlist, except to clear
+        // `personal_word_score` if applicable.
         if !source_config.enabled() {
+            if is_personal_list {
+                if let Some(word_id) = self.word_id_by_string.get(normalized) {
+                    self.words[normalized.chars().count()][*word_id].personal_word_score = None;
+                }
+            }
             return OptimisticDeletionResult::NoChange;
         }
 
@@ -814,6 +892,10 @@ impl WordList {
         };
 
         let word = &mut self.words[length][word_id];
+
+        if is_personal_list {
+            word.personal_word_score = None;
+        }
 
         // If the version we have stored isn't from this list, no action is needed --
         // either it's not present in the list at all, or it's already shadowed by a
@@ -1000,7 +1082,12 @@ impl WordList {
     /// Reload the word list(s) using the current config. Returns the same information as
     /// `replace_list`.
     pub fn refresh_from_disk(&mut self) -> (bool, HashSet<GlobalWordId>) {
-        self.replace_list(self.source_configs.clone(), self.max_length, false)
+        self.replace_list(
+            self.source_configs.clone(),
+            self.personal_list_index,
+            self.max_length,
+            false,
+        )
     }
 
     /// For each source provided last time we loaded or updated, return any errors it emitted.
@@ -1084,7 +1171,7 @@ pub mod tests {
 
     #[test]
     fn test_loads_words_up_to_max_length() {
-        let word_list = WordList::new(word_list_source_config(), Some(5), None);
+        let word_list = WordList::new(word_list_source_config(), None, Some(5), None);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 6);
@@ -1105,7 +1192,7 @@ pub mod tests {
 
     #[test]
     fn test_dynamic_max_length() {
-        let mut word_list = WordList::new(word_list_source_config(), None, None);
+        let mut word_list = WordList::new(word_list_source_config(), None, None, None);
 
         assert_eq!(word_list.max_length, None);
         assert_eq!(word_list.words.len(), 16);
@@ -1119,7 +1206,7 @@ pub mod tests {
         assert_eq!(word.hidden, false);
         assert_eq!(word.source_index, Some(0));
 
-        word_list.replace_list(word_list_source_config(), Some(5), false);
+        word_list.replace_list(word_list_source_config(), None, Some(5), false);
 
         assert_eq!(word_list.max_length, Some(5));
         assert_eq!(word_list.words.len(), 16);
@@ -1145,6 +1232,7 @@ pub mod tests {
             }],
             None,
             None,
+            None,
         );
 
         assert_eq!(
@@ -1155,7 +1243,7 @@ pub mod tests {
 
     #[test]
     fn test_soft_dupe_index() {
-        let mut word_list = WordList::new(vec![], Some(6), Some(5));
+        let mut word_list = WordList::new(vec![], None, Some(6), Some(5));
         let mut soft_dupe_index = DupeIndex::<4>::default();
 
         // This doesn't do anything except make sure it's OK to call this method unboxed
@@ -1185,6 +1273,7 @@ pub mod tests {
                     ("golves".into(), 0),
                 ],
             }],
+            None,
             None,
             false,
         );
@@ -1252,6 +1341,7 @@ pub mod tests {
                     path: dictionary_path().into(),
                 },
             ],
+            None,
             None,
             None,
         );
@@ -1348,6 +1438,7 @@ pub mod tests {
                 },
             ],
             None,
+            None,
             false,
         );
 
@@ -1440,6 +1531,7 @@ pub mod tests {
                     path: tmpfile_2.path().into(),
                 },
             ],
+            None,
             None,
             None,
         );
@@ -1536,6 +1628,7 @@ pub mod tests {
             ],
             None,
             None,
+            None,
         );
         let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
 
@@ -1596,6 +1689,7 @@ pub mod tests {
             ],
             None,
             None,
+            None,
         );
         let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
         let steev_id = word_list.get_word_id_or_add_hidden("steev");
@@ -1638,6 +1732,7 @@ pub mod tests {
                     path: dictionary_path().into(),
                 },
             ],
+            None,
             None,
             false,
         );
@@ -1708,6 +1803,7 @@ pub mod tests {
             ],
             None,
             None,
+            None,
         );
         let idkidkidk_id = word_list.get_word_id_or_add_hidden("idkidkidk");
 
@@ -1769,6 +1865,7 @@ pub mod tests {
                     path: dictionary_path().into(),
                 },
             ],
+            None,
             None,
             None,
         );
@@ -1839,6 +1936,7 @@ pub mod tests {
             ],
             None,
             None,
+            None,
         );
         let wolves_id = word_list.get_word_id_or_add_hidden("wolves");
         let steev_id = word_list.get_word_id_or_add_hidden("steev");
@@ -1862,6 +1960,7 @@ pub mod tests {
                     path: dictionary_path().into(),
                 },
             ],
+            None,
             None,
             false,
         );

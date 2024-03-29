@@ -816,7 +816,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn load_word_list(max_length: usize) -> WordList {
-        let word_list = WordList::new(word_list_source_config(), Some(max_length), Some(5));
+        let word_list = WordList::new(word_list_source_config(), None, Some(max_length), Some(5));
         let word_list_errors = word_list.get_source_errors().get("0").unwrap().clone();
         assert!(
             word_list_errors.is_empty(),
@@ -1241,6 +1241,7 @@ mod tests {
                     path: dictionary_path().into(),
                 },
             ],
+            None,
             Some(7),
             None,
         );
