@@ -178,6 +178,7 @@ impl OwnedGridConfig {
 /// front. This is a balance between fillability (the most important factor, since our odds of being
 /// able to find a fill in a reasonable amount of time depend on how many tries it takes us to find
 /// a usable word for each slot) and quality metrics like word score and letter score.
+#[allow(clippy::cast_lossless)]
 pub fn sort_slot_options(
     word_list: &WordList,
     slot_configs: &[SlotConfig],
@@ -225,8 +226,8 @@ pub fn sort_slot_options(
             // increasing the weight of `fill_score` relative to the other two will reduce fill
             // time.
             -((fill_score * 900.0) as i64
-                + (word.letter_score * 5.0) as i64
-                + (word.score * 5.0) as i64)
+                + ((word.letter_score as f32) * 5.0) as i64
+                + ((word.score as f32) * 5.0) as i64)
         });
     }
 }
@@ -432,7 +433,7 @@ pub fn generate_slot_options(
     fill: &[Option<GlyphId>],
     slot_configs: &[SlotConfig],
     grid_width: usize,
-    min_score: f32,
+    min_score: u16,
 ) -> SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> {
     let mut slot_options: SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> = smallvec![];
 
@@ -484,7 +485,7 @@ pub fn generate_grid_config<'a>(
     raw_fill: &'a [Option<String>],
     width: usize,
     height: usize,
-    min_score: f32,
+    min_score: u16,
 ) -> OwnedGridConfig {
     let (slot_configs, crossing_count) = generate_slot_configs(entries);
 
@@ -589,7 +590,7 @@ pub fn generate_slots_from_template_string(template: &str) -> Vec<SlotSpec> {
 pub fn generate_grid_config_from_template_string(
     word_list: WordList,
     template: &str,
-    min_score: f32,
+    min_score: u16,
 ) -> OwnedGridConfig {
     let slot_specs = generate_slots_from_template_string(template);
 

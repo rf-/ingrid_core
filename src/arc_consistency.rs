@@ -539,7 +539,7 @@ mod tests {
         let height = template.lines().count();
         let word_list = WordList::new(word_list_source_config(), Some(width.max(height)), Some(5));
 
-        generate_grid_config_from_template_string(word_list, template, 40.0)
+        generate_grid_config_from_template_string(word_list, template, 40)
     }
 
     #[test]

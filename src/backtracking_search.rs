@@ -825,7 +825,7 @@ mod tests {
         word_list
     }
 
-    fn generate_config_with_min_score(template: &str, min_score: f32) -> OwnedGridConfig {
+    fn generate_config_with_min_score(template: &str, min_score: u16) -> OwnedGridConfig {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
@@ -839,7 +839,7 @@ mod tests {
     }
 
     fn generate_config(template: &str) -> OwnedGridConfig {
-        generate_config_with_min_score(template, 40.0)
+        generate_config_with_min_score(template, 40)
     }
 
     #[test]
@@ -1130,7 +1130,7 @@ mod tests {
             ......#s.......
             ......##.......
             ",
-            50.0,
+            50,
         );
 
         let abort = grid_config.abort.clone().unwrap();
@@ -1245,7 +1245,7 @@ mod tests {
             None,
         );
 
-        let grid_config = generate_grid_config_from_template_string(word_list, template, 40.0);
+        let grid_config = generate_grid_config_from_template_string(word_list, template, 40);
 
         let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
 
