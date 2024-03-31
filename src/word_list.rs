@@ -228,6 +228,7 @@ fn parse_word_list_file_contents(
 pub fn load_words_from_source(
     source: &WordListSourceConfig,
     source_index: u16,
+    unless_disabled: bool,
 ) -> (Vec<RawWordListEntry>, WordListSourceState) {
     let id = source.id();
     let mtime = source.modified();
@@ -237,7 +238,7 @@ pub fn load_words_from_source(
         WordListSourceConfig::Memory { .. }
         | WordListSourceConfig::File { .. }
         | WordListSourceConfig::FileContents { .. }
-            if !source.enabled() =>
+            if unless_disabled && !source.enabled() =>
         {
             vec![]
         }
@@ -642,8 +643,7 @@ impl WordList {
                 .personal_list_index
                 .map_or(false, |idx| idx == (source_index as u16));
 
-            // TODO: Avoid actually loading/parsing list if disabled.
-            let (words, mut new_state) = load_words_from_source(source, source_index as u16);
+            let (words, mut new_state) = load_words_from_source(source, source_index as u16, true);
 
             // Any pending updates should be carried over from the old state to the new state.
             let old_state = source_states.remove(&new_state.id);
