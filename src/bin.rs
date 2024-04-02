@@ -95,16 +95,16 @@ fn main() -> Result<(), Error> {
         args.max_shared_substring,
     );
 
-    if let Some(errors) = word_list.get_source_errors().into_values().next() {
-        return if errors.len() == 1 {
-            Err(Error(format!("{}", errors[0])))
-        } else {
+    if let Some(errors) = word_list.get_source_errors().get("0") {
+        if errors.len() == 1 {
+            return Err(Error(format!("{}", errors[0])));
+        } else if errors.len() > 1 {
             let mut full_error: String = "".into();
             for error in errors {
                 full_error.push_str(&format!("\n- {error}"));
             }
-            Err(Error(full_error))
-        };
+            return Err(Error(full_error));
+        }
     }
 
     if word_list.word_id_by_string.is_empty() {
