@@ -3,7 +3,9 @@ use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Debug;
+use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Read;
 use std::time::SystemTime;
 use std::{fmt, fs, io, mem};
 use unicode_normalization::UnicodeNormalization;
@@ -196,6 +198,11 @@ fn parse_word_list_file_contents(
 
             let line_parts: Vec<_> = line.split(';').collect();
 
+            if line_parts[0].chars().find(|c| *c == '�').is_some() {
+                errors.push(WordListError::InvalidWord(line_parts[0].into()));
+                return Some(None);
+            }
+
             let canonical = line_parts[0].trim().to_string();
             let normalized = normalize_word(&canonical);
             if normalized.is_empty() {
@@ -222,6 +229,13 @@ fn parse_word_list_file_contents(
         })
         .flatten()
         .collect()
+}
+
+fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::Error> {
+    let mut file = File::open(path)?;
+    let mut buf = vec![];
+    file.read_to_end(&mut buf)?;
+    return Ok(String::from_utf8_lossy(&buf).into());
 }
 
 #[must_use]
@@ -264,14 +278,13 @@ pub fn load_words_from_source(
             .collect(),
 
         WordListSourceConfig::File { path, .. } => {
-            if let Ok(contents) = fs::read_to_string(path) {
+            if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
                 parse_word_list_file_contents(&contents, source_index, &mut errors)
             } else {
                 errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
             }
         }
-
         WordListSourceConfig::FileContents { contents, .. } => {
             parse_word_list_file_contents(contents, source_index, &mut errors)
         }
