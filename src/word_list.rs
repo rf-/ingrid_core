@@ -206,7 +206,6 @@ fn parse_word_list_file_contents(
             let canonical = line_parts[0].trim().to_string();
             let normalized = normalize_word(&canonical);
             if normalized.is_empty() {
-                errors.push(WordListError::InvalidWord(line_parts[0].into()));
                 return Some(None);
             }
 
