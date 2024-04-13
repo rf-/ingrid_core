@@ -181,12 +181,10 @@ pub struct RawWordListEntry {
     pub normalized: String,
     pub canonical: String,
     pub score: u16,
-    pub source_index: Option<u16>,
 }
 
 fn parse_word_list_file_contents(
     file_contents: &str,
-    source_index: u16,
     errors: &mut Vec<WordListError>,
 ) -> Vec<RawWordListEntry> {
     file_contents
@@ -198,7 +196,7 @@ fn parse_word_list_file_contents(
 
             let line_parts: Vec<_> = line.split(';').collect();
 
-            if line_parts[0].chars().find(|c| *c == '�').is_some() {
+            if line_parts[0].chars().any(|c| c == '�') {
                 errors.push(WordListError::InvalidWord(line_parts[0].into()));
                 return Some(None);
             }
@@ -223,7 +221,6 @@ fn parse_word_list_file_contents(
                 normalized,
                 canonical,
                 score,
-                source_index: Some(source_index),
             }))
         })
         .flatten()
@@ -237,13 +234,17 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
     return Ok(String::from_utf8_lossy(&buf).into());
 }
 
+pub struct RawWordListContents {
+    pub mtime: Option<SystemTime>,
+    pub entries: Vec<RawWordListEntry>,
+    pub errors: Vec<WordListError>,
+}
+
 #[must_use]
 pub fn load_words_from_source(
     source: &WordListSourceConfig,
-    source_index: u16,
     unless_disabled: bool,
-) -> (Vec<RawWordListEntry>, WordListSourceState) {
-    let id = source.id();
+) -> RawWordListContents {
     let mtime = source.modified();
     let mut errors = vec![];
 
@@ -262,7 +263,6 @@ pub fn load_words_from_source(
             .filter_map(|(canonical, score)| {
                 let normalized = normalize_word(&canonical);
                 if normalized.is_empty() {
-                    errors.push(WordListError::InvalidWord(canonical));
                     return None;
                 }
 
@@ -271,34 +271,28 @@ pub fn load_words_from_source(
                     normalized,
                     canonical,
                     score,
-                    source_index: Some(source_index),
                 })
             })
             .collect(),
 
         WordListSourceConfig::File { path, .. } => {
             if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
-                parse_word_list_file_contents(&contents, source_index, &mut errors)
+                parse_word_list_file_contents(&contents, &mut errors)
             } else {
                 errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
             }
         }
         WordListSourceConfig::FileContents { contents, .. } => {
-            parse_word_list_file_contents(contents, source_index, &mut errors)
+            parse_word_list_file_contents(contents, &mut errors)
         }
     };
 
-    (
+    RawWordListContents {
+        mtime,
         entries,
-        WordListSourceState {
-            source_index,
-            id,
-            mtime,
-            errors,
-            pending_updates: HashMap::new(),
-        },
-    )
+        errors,
+    }
 }
 
 type OnUpdateCallback = Box<dyn FnMut(&mut WordList, &[GlobalWordId]) + Send + Sync>;
@@ -427,8 +421,8 @@ impl WordList {
                 normalized: normalized_word.to_string(),
                 canonical: normalized_word.to_string(),
                 score: 0,
-                source_index: None,
             },
+            None,
             true,
         );
 
@@ -442,7 +436,12 @@ impl WordList {
 
     /// Add the given word to the list without triggering the update callback. The word must not be
     /// part of the list yet.
-    fn add_word_silent(&mut self, raw_entry: &RawWordListEntry, hidden: bool) -> GlobalWordId {
+    fn add_word_silent(
+        &mut self,
+        raw_entry: &RawWordListEntry,
+        source_index: Option<u16>,
+        hidden: bool,
+    ) -> GlobalWordId {
         let glyphs: SmallVec<[GlyphId; MAX_SLOT_LENGTH]> = raw_entry
             .normalized
             .chars()
@@ -469,11 +468,11 @@ impl WordList {
                 .map(|char| LETTER_POINTS.get(&char).copied().unwrap_or(3))
                 .sum(),
             hidden,
-            source_index: raw_entry.source_index,
+            source_index,
             shadowed: false,
             personal_word_score: if self
                 .personal_list_index
-                .map_or(false, |idx| Some(idx) == raw_entry.source_index)
+                .map_or(false, |idx| Some(idx) == source_index)
             {
                 Some(raw_entry.score)
             } else {
@@ -548,7 +547,7 @@ impl WordList {
 
         self.load_words_from_source_configs(
             max_length,
-            |word_list, raw_entry| {
+            |word_list, raw_entry, source_index| {
                 let word_length = raw_entry.length;
                 let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
 
@@ -563,33 +562,32 @@ impl WordList {
                     word.score = raw_entry.score;
                     word.hidden = false;
                     word.canonical_string = raw_entry.canonical.clone();
-                    word.source_index = raw_entry.source_index;
+                    word.source_index = Some(source_index);
                     word.shadowed = false;
-                    word.personal_word_score = if personal_list_index
-                        .map_or(false, |idx| Some(idx) == raw_entry.source_index)
-                    {
-                        Some(raw_entry.score)
-                    } else {
-                        None
-                    };
+                    word.personal_word_score =
+                        if personal_list_index.map_or(false, |idx| idx == source_index) {
+                            Some(raw_entry.score)
+                        } else {
+                            None
+                        };
                     removed_words_set.remove(&(word_length, existing_word_id));
                 } else if !silent {
                     any_more_visible = true;
-                    let added_word_id = word_list.add_word_silent(&raw_entry, false);
+                    let added_word_id =
+                        word_list.add_word_silent(&raw_entry, Some(source_index), false);
                     newly_added_words.push(added_word_id);
                 } else {
                     any_more_visible = true;
-                    word_list.add_word_silent(&raw_entry, false);
+                    word_list.add_word_silent(&raw_entry, Some(source_index), false);
                 }
             },
-            |word_list, raw_entry| {
+            |word_list, raw_entry, source_index| {
                 let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
 
                 if let Some(&existing_word_id) = existing_word_id {
                     let word = &mut word_list.words[raw_entry.length][existing_word_id];
                     word.shadowed = true;
-                    if personal_list_index.map_or(false, |idx| Some(idx) == raw_entry.source_index)
-                    {
+                    if personal_list_index.map_or(false, |idx| idx == source_index) {
                         word.personal_word_score = Some(raw_entry.score);
                     };
                 } else {
@@ -629,8 +627,8 @@ impl WordList {
     fn load_words_from_source_configs(
         &mut self,
         max_length: Option<usize>,
-        mut add_word: impl FnMut(&mut WordList, RawWordListEntry),
-        mut handle_shadowed_entry: impl FnMut(&mut WordList, RawWordListEntry),
+        mut add_word: impl FnMut(&mut WordList, RawWordListEntry, u16),
+        mut handle_shadowed_entry: impl FnMut(&mut WordList, RawWordListEntry, u16),
         mut handle_disabled_personal_entry: impl FnMut(&mut WordList, RawWordListEntry),
     ) {
         fn hash_str(str: &str) -> u64 {
@@ -655,7 +653,19 @@ impl WordList {
                 .personal_list_index
                 .map_or(false, |idx| idx == (source_index as u16));
 
-            let (words, mut new_state) = load_words_from_source(source, source_index as u16, true);
+            let RawWordListContents {
+                mtime,
+                entries,
+                errors,
+            } = load_words_from_source(source, true);
+
+            let mut new_state = WordListSourceState {
+                source_index: source_index as u16,
+                id: source.id(),
+                mtime,
+                errors,
+                pending_updates: HashMap::new(),
+            };
 
             // Any pending updates should be carried over from the old state to the new state.
             let old_state = source_states.remove(&new_state.id);
@@ -672,7 +682,7 @@ impl WordList {
             }
 
             let mut words_iter: Box<dyn Iterator<Item = RawWordListEntry>> =
-                Box::new(words.into_iter());
+                Box::new(entries.into_iter());
 
             // If there are any pending updates, they take priority over the list items as stored.
             let mut updated_words: Vec<RawWordListEntry> = vec![];
@@ -689,7 +699,6 @@ impl WordList {
                             normalized: normalized.clone(),
                             canonical: canonical.clone(),
                             score: *score,
-                            source_index: Some(source_index as u16),
                         });
                     }
                 }
@@ -713,10 +722,10 @@ impl WordList {
                 if seen_words.contains(&hash) {
                     // Technically this is wrong, since a word could be shadowed by a duplicate
                     // entry in the same wordlist file, but it's not a big deal.
-                    handle_shadowed_entry(self, word);
+                    handle_shadowed_entry(self, word, new_state.source_index);
                     continue;
                 }
-                add_word(self, word);
+                add_word(self, word, new_state.source_index);
                 seen_words.insert(hash);
             }
 

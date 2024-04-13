@@ -95,6 +95,7 @@ fn main() -> Result<(), Error> {
         args.max_shared_substring,
     );
 
+    #[allow(clippy::comparison_chain)]
     if let Some(errors) = word_list.get_source_errors().get("0") {
         if errors.len() == 1 {
             return Err(Error(format!("{}", errors[0])));
