@@ -165,7 +165,9 @@ pub enum PendingWordListUpdate {
 pub struct WordListSourceState {
     pub source_index: u16,
     pub id: String,
+    pub entries: Vec<RawWordListEntry>,
     pub mtime: Option<SystemTime>,
+    pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
     pub pending_updates: HashMap<String, PendingWordListUpdate>,
 }
@@ -185,46 +187,51 @@ pub struct RawWordListEntry {
 
 fn parse_word_list_file_contents(
     file_contents: &str,
+    index: &mut HashMap<String, usize>,
     errors: &mut Vec<WordListError>,
 ) -> Vec<RawWordListEntry> {
-    file_contents
-        .lines()
-        .map_while(|line| {
-            if errors.len() > 100 {
-                return None;
-            }
+    let mut entries = Vec::with_capacity(file_contents.lines().count());
 
-            let line_parts: Vec<_> = line.split(';').collect();
+    for line in file_contents.lines() {
+        if errors.len() > 100 {
+            break;
+        }
 
-            if line_parts[0].chars().any(|c| c == '�') {
-                errors.push(WordListError::InvalidWord(line_parts[0].into()));
-                return Some(None);
-            }
+        let line_parts: Vec<_> = line.split(';').collect();
 
-            let canonical = line_parts[0].trim().to_string();
-            let normalized = normalize_word(&canonical);
-            if normalized.is_empty() {
-                return Some(None);
-            }
+        if line_parts[0].chars().any(|c| c == '�') {
+            errors.push(WordListError::InvalidWord(line_parts[0].into()));
+            continue;
+        }
 
-            let Ok(score) = (if line_parts.len() < 2 {
-                Ok(50)
-            } else {
-                line_parts[1].trim().parse::<u16>()
-            }) else {
-                errors.push(WordListError::InvalidScore(line_parts[1].into()));
-                return Some(None);
-            };
+        let canonical = line_parts[0].trim().to_string();
+        let normalized = normalize_word(&canonical);
+        if normalized.is_empty() {
+            continue;
+        }
+        if index.contains_key(&normalized) {
+            continue;
+        }
 
-            Some(Some(RawWordListEntry {
-                length: normalized.chars().count(),
-                normalized,
-                canonical,
-                score,
-            }))
-        })
-        .flatten()
-        .collect()
+        let Ok(score) = (if line_parts.len() < 2 {
+            Ok(50)
+        } else {
+            line_parts[1].trim().parse::<u16>()
+        }) else {
+            errors.push(WordListError::InvalidScore(line_parts[1].into()));
+            continue;
+        };
+
+        index.insert(normalized.clone(), entries.len());
+        entries.push(RawWordListEntry {
+            length: normalized.chars().count(),
+            normalized,
+            canonical,
+            score,
+        });
+    }
+
+    entries
 }
 
 fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::Error> {
@@ -235,8 +242,9 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
 }
 
 pub struct RawWordListContents {
-    pub mtime: Option<SystemTime>,
     pub entries: Vec<RawWordListEntry>,
+    pub mtime: Option<SystemTime>,
+    pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
 }
 
@@ -246,6 +254,7 @@ pub fn load_words_from_source(
     unless_disabled: bool,
 ) -> RawWordListContents {
     let mtime = source.modified();
+    let mut index = HashMap::new();
     let mut errors = vec![];
 
     let entries = match source {
@@ -257,40 +266,47 @@ pub fn load_words_from_source(
             vec![]
         }
 
-        WordListSourceConfig::Memory { words, .. } => words
-            .iter()
-            .cloned()
-            .filter_map(|(canonical, score)| {
+        WordListSourceConfig::Memory { words, .. } => {
+            let mut entries = Vec::with_capacity(words.len());
+
+            for (canonical, score) in words.iter().cloned() {
                 let normalized = normalize_word(&canonical);
                 if normalized.is_empty() {
-                    return None;
+                    continue;
+                }
+                if index.contains_key(&normalized) {
+                    continue;
                 }
 
-                Some(RawWordListEntry {
+                index.insert(normalized.clone(), entries.len());
+                entries.push(RawWordListEntry {
                     length: normalized.chars().count(),
                     normalized,
                     canonical,
                     score,
-                })
-            })
-            .collect(),
+                });
+            }
+
+            entries
+        }
 
         WordListSourceConfig::File { path, .. } => {
             if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
-                parse_word_list_file_contents(&contents, &mut errors)
+                parse_word_list_file_contents(&contents, &mut index, &mut errors)
             } else {
                 errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
             }
         }
         WordListSourceConfig::FileContents { contents, .. } => {
-            parse_word_list_file_contents(contents, &mut errors)
+            parse_word_list_file_contents(contents, &mut index, &mut errors)
         }
     };
 
     RawWordListContents {
-        mtime,
         entries,
+        mtime,
+        index,
         errors,
     }
 }
@@ -574,11 +590,11 @@ impl WordList {
                 } else if !silent {
                     any_more_visible = true;
                     let added_word_id =
-                        word_list.add_word_silent(&raw_entry, Some(source_index), false);
+                        word_list.add_word_silent(raw_entry, Some(source_index), false);
                     newly_added_words.push(added_word_id);
                 } else {
                     any_more_visible = true;
-                    word_list.add_word_silent(&raw_entry, Some(source_index), false);
+                    word_list.add_word_silent(raw_entry, Some(source_index), false);
                 }
             },
             |word_list, raw_entry, source_index| {
@@ -627,9 +643,9 @@ impl WordList {
     fn load_words_from_source_configs(
         &mut self,
         max_length: Option<usize>,
-        mut add_word: impl FnMut(&mut WordList, RawWordListEntry, u16),
-        mut handle_shadowed_entry: impl FnMut(&mut WordList, RawWordListEntry, u16),
-        mut handle_disabled_personal_entry: impl FnMut(&mut WordList, RawWordListEntry),
+        mut add_word: impl FnMut(&mut WordList, &RawWordListEntry, u16),
+        mut handle_shadowed_entry: impl FnMut(&mut WordList, &RawWordListEntry, u16),
+        mut handle_disabled_personal_entry: impl FnMut(&mut WordList, &RawWordListEntry),
     ) {
         fn hash_str(str: &str) -> u64 {
             let mut hasher = DefaultHasher::new();
@@ -654,15 +670,18 @@ impl WordList {
                 .map_or(false, |idx| idx == (source_index as u16));
 
             let RawWordListContents {
-                mtime,
                 entries,
+                mtime,
+                index,
                 errors,
             } = load_words_from_source(source, true);
 
             let mut new_state = WordListSourceState {
                 source_index: source_index as u16,
                 id: source.id(),
+                entries,
                 mtime,
+                index,
                 errors,
                 pending_updates: HashMap::new(),
             };
@@ -681,14 +700,12 @@ impl WordList {
                 continue;
             }
 
-            let mut words_iter: Box<dyn Iterator<Item = RawWordListEntry>> =
-                Box::new(entries.into_iter());
-
             // If there are any pending updates, they take priority over the list items as stored.
             let mut updated_words: Vec<RawWordListEntry> = vec![];
-            if !new_state.pending_updates.is_empty() {
+            let superseded_words = if new_state.pending_updates.is_empty() {
+                None
+            } else {
                 let mut superseded_words = HashSet::new();
-
                 for (normalized, pending_update) in &new_state.pending_updates {
                     superseded_words.insert(normalized.clone());
 
@@ -702,31 +719,37 @@ impl WordList {
                         });
                     }
                 }
+                Some(superseded_words)
+            };
 
-                words_iter = Box::new(
-                    words_iter.filter(move |word| !superseded_words.contains(&word.normalized)),
-                );
-            }
-
-            for word in updated_words.into_iter().chain(words_iter) {
+            let mut process_word = |word: &RawWordListEntry| {
                 if let Some(max_length) = max_length {
                     if word.length > max_length {
-                        continue;
+                        return;
                     }
                 }
                 if !is_source_enabled && is_personal_list {
                     handle_disabled_personal_entry(self, word);
-                    continue;
+                    return;
                 }
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
-                    // Technically this is wrong, since a word could be shadowed by a duplicate
-                    // entry in the same wordlist file, but it's not a big deal.
                     handle_shadowed_entry(self, word, new_state.source_index);
-                    continue;
+                    return;
                 }
                 add_word(self, word, new_state.source_index);
                 seen_words.insert(hash);
+            };
+            for word in &updated_words {
+                process_word(word);
+            }
+            for word in &new_state.entries {
+                if let Some(superseded_words) = superseded_words.as_ref() {
+                    if superseded_words.contains(&word.normalized) {
+                        continue;
+                    }
+                }
+                process_word(word);
             }
 
             new_states.insert(new_state.id.clone(), new_state);
