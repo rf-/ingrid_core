@@ -62,9 +62,6 @@ pub struct Word {
     /// one.
     pub source_index: Option<u16>,
 
-    /// Does the word also appear in any lower-priority lists than the one it came from?
-    pub shadowed: bool,
-
     // If we specified a personal list in config, the score from that list.
     pub personal_word_score: Option<u16>,
 }
@@ -530,7 +527,6 @@ impl WordList {
                 .sum(),
             hidden,
             source_index,
-            shadowed: false,
             personal_word_score: if self
                 .personal_list_index
                 .map_or(false, |idx| Some(idx) == source_index)
@@ -627,7 +623,6 @@ impl WordList {
                     word.hidden = false;
                     word.canonical_string = raw_entry.canonical.clone();
                     word.source_index = Some(source_index);
-                    word.shadowed = false;
                     word.personal_word_score =
                         if personal_list_index.map_or(false, |idx| idx == source_index) {
                             Some(raw_entry.score)
@@ -645,20 +640,6 @@ impl WordList {
                     word_list.add_word_silent(raw_entry, Some(source_index), false);
                 }
             },
-            |word_list, raw_entry, source_index| {
-                let existing_word_id = word_list.word_id_by_string.get(&raw_entry.normalized);
-
-                if let Some(&existing_word_id) = existing_word_id {
-                    let word = &mut word_list.words[raw_entry.length][existing_word_id];
-                    word.shadowed = true;
-                    if personal_list_index.map_or(false, |idx| idx == source_index) {
-                        word.personal_word_score = Some(raw_entry.score);
-                    };
-                } else {
-                    #[cfg(feature = "check_invariants")]
-                    panic!("replace_list: called handle_shadowed_entry without existing word");
-                }
-            },
             |word_list, raw_entry| {
                 let word_id = word_list.get_word_id_or_add_hidden(&raw_entry.normalized);
                 hidden_personal_scores.insert(word_id, raw_entry.score);
@@ -669,13 +650,13 @@ impl WordList {
         for &(length, word_id) in &removed_words_set {
             self.words[length][word_id].hidden = true;
             self.words[length][word_id].source_index = None;
-            self.words[length][word_id].shadowed = false;
             self.words[length][word_id].personal_word_score = None;
             less_visible_words_set.insert((length, word_id));
         }
 
-        // Finally, if the personal word list is disabled, set the `personal_word_score` field on
-        // all words it contains. (If it's enabled, it'll have been handled in the main loop.)
+        // Finally, if the personal list contained any words shadowed by higher-priority lists,
+        // or the whole personal list is disabled, set the `personal_word_score` field on words
+        // that weren't already updated.
         for ((length, word_id), score) in hidden_personal_scores {
             self.words[length][word_id].personal_word_score = Some(score);
         }
@@ -692,7 +673,6 @@ impl WordList {
         &mut self,
         max_length: Option<usize>,
         mut add_word: impl FnMut(&mut WordList, &RawWordListEntry, u16),
-        mut handle_shadowed_entry: impl FnMut(&mut WordList, &RawWordListEntry, u16),
         mut handle_disabled_personal_entry: impl FnMut(&mut WordList, &RawWordListEntry),
     ) {
         fn hash_str(str: &str) -> u64 {
@@ -763,7 +743,9 @@ impl WordList {
                 }
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
-                    handle_shadowed_entry(self, word, source_state.source_index);
+                    if is_personal_list {
+                        handle_disabled_personal_entry(self, word);
+                    }
                     return;
                 }
                 add_word(self, word, source_state.source_index);
@@ -838,10 +820,8 @@ impl WordList {
         }
     }
 
-    /// Update the word list state to be consistent with the given word being upserted into
-    /// the given source. This never requires a refresh, since we either add a
-    /// previously-unknown word, update or shadow an existing definition, or just ignore the
-    /// update if it would be shadowed.
+    /// Update the word list state to be consistent with the given word being upserted into the
+    /// given source.
     pub fn optimistically_update_word(&mut self, canonical: &str, score: u16, source_id: &str) {
         let normalized = normalize_word(canonical);
         if normalized.is_empty() {
@@ -894,20 +874,13 @@ impl WordList {
             .map_or(true, |existing_index| source_index <= existing_index);
 
         if !should_update {
-            word.shadowed = true;
             return;
         }
-
-        let shadowed = word.shadowed
-            || word
-                .source_index
-                .map_or(false, |existing_index| source_index < existing_index);
 
         word.canonical_string = canonical.into();
         word.score = score;
         word.hidden = false;
         word.source_index = Some(source_index);
-        word.shadowed = shadowed;
     }
 
     /// Update the word list state to be consistent with the given word being deleted from
@@ -985,14 +958,12 @@ impl WordList {
             word.canonical_string = entry.canonical.clone();
             word.hidden = false;
             word.source_index = Some(other_source_index as u16);
-            word.shadowed = false;
             return;
         }
 
         // If they didn't, we can safely hide it.
         word.hidden = true;
         word.source_index = None;
-        word.shadowed = false;
     }
 
     fn find_source_index_for_id(&self, source_id: &str) -> Option<u16> {
@@ -1438,21 +1409,18 @@ pub mod tests {
             assert_eq!(wolves.score, 70);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 71);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(0));
-            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(1));
-            assert_eq!(wharves.shadowed, false);
         }
 
         word_list.optimistically_update_word("wolves", 72, "0");
@@ -1466,21 +1434,18 @@ pub mod tests {
             assert_eq!(wolves.score, 72);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 73);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
-            assert_eq!(wharves.shadowed, true);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.score, 74);
             assert_eq!(worfs.hidden, false);
             assert_eq!(worfs.source_index, Some(0));
-            assert_eq!(worfs.shadowed, false);
         }
 
         word_list.optimistically_delete_word("wolves", "0");
@@ -1491,13 +1456,11 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.hidden, true);
             assert_eq!(worfs.source_index, None);
-            assert_eq!(worfs.shadowed, false);
         }
 
         word_list.replace_list(
@@ -1523,27 +1486,23 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 71);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(1));
-            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
-            assert_eq!(wharves.shadowed, true); // optimistic update is still there
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.hidden, true);
             assert_eq!(worfs.source_index, None);
-            assert_eq!(worfs.shadowed, false);
         }
 
         word_list.optimistically_update_word("wolves", 80, "0");
@@ -1556,28 +1515,24 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
         {
             let wolvvves = word_list.get_word(wolvvves_id);
             assert_eq!(wolvvves.score, 81);
             assert_eq!(wolvvves.hidden, false);
             assert_eq!(wolvvves.source_index, Some(1));
-            assert_eq!(wolvvves.shadowed, false);
         }
         {
             let wharves = word_list.get_word(wharves_id);
             assert_eq!(wharves.score, 50);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
-            assert_eq!(wharves.shadowed, true);
         }
         {
             let worfs = word_list.get_word(worfs_id);
             assert_eq!(worfs.score, 83);
             assert_eq!(worfs.hidden, false);
             assert_eq!(worfs.source_index, Some(1));
-            assert_eq!(worfs.shadowed, false);
         }
     }
 
@@ -1620,21 +1575,18 @@ pub mod tests {
             assert_eq!(wolves.score, 51);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
         {
             let steev = word_list.get_word(steev_id);
             assert_eq!(steev.score, 54);
             assert_eq!(steev.hidden, false);
             assert_eq!(steev.source_index, Some(0));
-            assert_eq!(steev.shadowed, false);
         }
         {
             let what = word_list.get_word(what_id);
             assert_eq!(what.score, 50);
             assert_eq!(what.hidden, false);
             assert_eq!(what.source_index, Some(1));
-            assert_eq!(what.shadowed, false);
         }
 
         word_list.optimistically_update_word("wOl vEs", 60, "0");
@@ -1647,14 +1599,12 @@ pub mod tests {
             assert_eq!(wolves.score, 60);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
         {
             let steev = word_list.get_word(steev_id);
             assert_eq!(steev.score, 54);
             assert_eq!(steev.hidden, true);
             assert_eq!(steev.source_index, None);
-            assert_eq!(steev.shadowed, false);
         }
         {
             let tonberry_id = word_list.get_word_id_or_add_hidden("tonberry");
@@ -1662,7 +1612,6 @@ pub mod tests {
             assert_eq!(tonberry.score, 30);
             assert_eq!(tonberry.hidden, false);
             assert_eq!(tonberry.source_index, Some(2));
-            assert_eq!(tonberry.shadowed, false);
         }
         assert!(word_list.needs_sync);
 
@@ -1713,7 +1662,6 @@ pub mod tests {
             assert_eq!(wolves.score, 51);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
-            assert_eq!(wolves.shadowed, true);
         }
 
         word_list.optimistically_delete_word("wolves", "0");
@@ -1723,7 +1671,6 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         assert!(word_list.needs_sync);
 
@@ -1775,7 +1722,6 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let steev = word_list.get_word(steev_id);
@@ -1783,7 +1729,6 @@ pub mod tests {
             assert_eq!(steev.score, 55);
             assert_eq!(steev.hidden, false);
             assert_eq!(steev.source_index, Some(0));
-            assert_eq!(steev.shadowed, false);
         }
         assert!(word_list.needs_sync);
 
@@ -1820,7 +1765,6 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let steev = word_list.get_word(steev_id);
@@ -1828,7 +1772,6 @@ pub mod tests {
             assert_eq!(steev.score, 55);
             assert_eq!(steev.hidden, false);
             assert_eq!(steev.source_index, Some(0));
-            assert_eq!(steev.shadowed, false);
         }
 
         // Make another out-of-band change, so we can validate that it gets loaded again
@@ -1949,7 +1892,6 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let steev = word_list.get_word(steev_id);
@@ -1965,7 +1907,6 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let steev = word_list.get_word(steev_id);
@@ -2040,14 +1981,12 @@ pub mod tests {
             assert_eq!(wolves.score, 50);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
-            assert_eq!(wolves.shadowed, false);
         }
         {
             let steev = word_list.get_word(steev_id);
             assert_eq!(steev.score, 51);
             assert_eq!(steev.hidden, false);
             assert_eq!(steev.source_index, Some(0));
-            assert_eq!(steev.shadowed, false);
         }
 
         // Now do the actual sync.
