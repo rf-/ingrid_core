@@ -161,7 +161,6 @@ pub enum PendingWordListUpdate {
     Delete,
 }
 
-#[derive(Debug)]
 pub struct WordListSourceState {
     pub source_index: u16,
     pub id: String,
@@ -170,6 +169,20 @@ pub struct WordListSourceState {
     pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
     pub pending_updates: HashMap<String, PendingWordListUpdate>,
+}
+
+impl Debug for WordListSourceState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WordList")
+            .field("source_index", &self.source_index)
+            .field("id", &self.id)
+            .field("entries", &format!("({} entries)", self.entries.len()))
+            .field("mtime", &self.mtime)
+            .field("index", &format!("({} entries)", self.index.len()))
+            .field("errors", &self.errors)
+            .field("pending_updates", &self.pending_updates)
+            .finish()
+    }
 }
 
 /// `WordListSourceState`s keyed by the `id` of the relevant source.
@@ -309,6 +322,55 @@ pub fn load_words_from_source(
         index,
         errors,
     }
+}
+
+/// Refresh the given source, regardless of whether it appears to need it.
+fn refresh_source(
+    source: &WordListSourceConfig,
+    source_index: u16,
+    source_states: &mut HashMap<String, WordListSourceState>,
+) {
+    let RawWordListContents {
+        entries,
+        mtime,
+        index,
+        errors,
+    } = load_words_from_source(source, true);
+
+    let mut new_state = WordListSourceState {
+        source_index,
+        id: source.id(),
+        entries,
+        mtime,
+        index,
+        errors,
+        pending_updates: HashMap::new(),
+    };
+
+    let old_state = source_states.remove(&new_state.id);
+    if let Some(old_state) = old_state {
+        new_state.pending_updates = old_state.pending_updates;
+    }
+
+    source_states.insert(new_state.id.clone(), new_state);
+}
+
+/// Refresh the given source unless we know it hasn't been modified.
+fn refresh_source_if_needed(
+    source: &WordListSourceConfig,
+    source_index: u16,
+    source_states: &mut HashMap<String, WordListSourceState>,
+) {
+    let old_state = source_states.get_mut(&source.id());
+    if let Some(old_state) = old_state {
+        let new_mtime = source.modified();
+        if new_mtime.is_some() && new_mtime == old_state.mtime {
+            old_state.source_index = source_index;
+            return;
+        }
+    }
+
+    refresh_source(source, source_index, source_states);
 }
 
 type OnUpdateCallback = Box<dyn FnMut(&mut WordList, &[GlobalWordId]) + Send + Sync>;
@@ -661,7 +723,6 @@ impl WordList {
         );
 
         let mut seen_words: HashSet<u64> = HashSet::new();
-        let mut new_states = HashMap::new();
 
         for (source_index, source) in source_configs.iter().enumerate() {
             let is_source_enabled = source.enabled();
@@ -669,44 +730,26 @@ impl WordList {
                 .personal_list_index
                 .map_or(false, |idx| idx == (source_index as u16));
 
-            let RawWordListContents {
-                entries,
-                mtime,
-                index,
-                errors,
-            } = load_words_from_source(source, true);
-
-            let mut new_state = WordListSourceState {
-                source_index: source_index as u16,
-                id: source.id(),
-                entries,
-                mtime,
-                index,
-                errors,
-                pending_updates: HashMap::new(),
-            };
-
-            // Any pending updates should be carried over from the old state to the new state.
-            let old_state = source_states.remove(&new_state.id);
-            if let Some(old_state) = old_state {
-                new_state.pending_updates = old_state.pending_updates;
-            }
+            refresh_source_if_needed(source, source_index as u16, &mut source_states);
 
             // If the source is disabled, none of its words (or pending updates) should affect the
             // actual wordlist. The exception is if this is the personal word list, in which case
             // we still need to process it to populate the `personal_word_score` fields.
             if !is_source_enabled && !is_personal_list {
-                new_states.insert(new_state.id.clone(), new_state);
                 continue;
             }
 
+            let source_state = source_states
+                .get(&source.id())
+                .expect("source state must be defined after refreshing");
+
             // If there are any pending updates, they take priority over the list items as stored.
             let mut updated_words: Vec<RawWordListEntry> = vec![];
-            let superseded_words = if new_state.pending_updates.is_empty() {
+            let superseded_words = if source_state.pending_updates.is_empty() {
                 None
             } else {
                 let mut superseded_words = HashSet::new();
-                for (normalized, pending_update) in &new_state.pending_updates {
+                for (normalized, pending_update) in &source_state.pending_updates {
                     superseded_words.insert(normalized.clone());
 
                     if let PendingWordListUpdate::AddOrUpdate { canonical, score } = pending_update
@@ -734,16 +777,16 @@ impl WordList {
                 }
                 let hash = hash_str(&word.normalized);
                 if seen_words.contains(&hash) {
-                    handle_shadowed_entry(self, word, new_state.source_index);
+                    handle_shadowed_entry(self, word, source_state.source_index);
                     return;
                 }
-                add_word(self, word, new_state.source_index);
+                add_word(self, word, source_state.source_index);
                 seen_words.insert(hash);
             };
             for word in &updated_words {
                 process_word(word);
             }
-            for word in &new_state.entries {
+            for word in &source_state.entries {
                 if let Some(superseded_words) = superseded_words.as_ref() {
                     if superseded_words.contains(&word.normalized) {
                         continue;
@@ -751,12 +794,10 @@ impl WordList {
                 }
                 process_word(word);
             }
-
-            new_states.insert(new_state.id.clone(), new_state);
         }
 
         self.source_configs = source_configs;
-        self.source_states = new_states;
+        self.source_states = source_states;
     }
 
     /// What's the unique glyph id for the given char? We do this lazily, instead of just mapping
@@ -976,16 +1017,23 @@ impl WordList {
             })
     }
 
-    /// If there are any pending updates, write them to disk. Return a flag indicating whether we
-    /// need to refresh the word lists. If any pending updates can't be written (probably due to
-    /// something like permissions issues or a drive not being mounted), return error info, reset
-    /// `sync_state` to `Synced`, and keep the pending updates in place.
+    /// If there are any pending updates, write them to disk and refresh the contents of the
+    /// affected list(s). Return a flag indicating whether we need to refresh the overall word
+    /// list; this is true only if we think the end state of the individual lists might be
+    /// inconsistent with the previous state counting pending updates. If any pending updates can't
+    /// be written (probably due to something like permissions issues or a drive not being
+    /// mounted), return error info, reset `sync_state` to `Synced`, and keep the pending updates
+    /// in place.
     pub fn sync_updates_to_disk(&mut self) -> (bool, SyncErrors) {
-        let mut should_refresh = self.sync_state == SyncState::HighPriority;
+        let mut should_refresh_overall = self.sync_state == SyncState::HighPriority;
         let mut sync_errors: SyncErrors = HashMap::new();
 
+        let source_ids: Vec<_> = self.source_states.keys().cloned().collect();
+
         // For each source file, write any pending updates.
-        for source_state in self.source_states.values_mut() {
+        for source_id in source_ids {
+            let source_state = self.source_states.get_mut(&source_id).unwrap();
+
             if source_state.pending_updates.is_empty() {
                 continue;
             }
@@ -994,10 +1042,10 @@ impl WordList {
 
             // If the file was updated externally since the last time we reloaded it, there's no
             // problem with this process since we'd read it from disk either way, but unless it's
-            // disabled we'll definitely need to do a full refresh of the word list when we're done
+            // disabled we'll definitely want to do a full refresh of the word list when we're done
             // syncing.
             if source_config.enabled() && source_state.mtime != source_config.modified() {
-                should_refresh = true;
+                should_refresh_overall = true;
             }
 
             let WordListSourceConfig::File { path, .. } = &source_config else {
@@ -1011,10 +1059,10 @@ impl WordList {
             // We don't want to use `parse_word_list_file_contents` here since that
             // prioritizes ending up with a clean list and parse errors, whereas here we
             // want to be as unopinionated as possible.
-            let file_contents = match fs::read_to_string(&path) {
+            let file_contents = match read_file_tolerating_invalid_encoding(&path) {
                 Ok(contents) => contents,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    // If the file doesn't exist, we can just treat it as empty.
+                    should_refresh_overall = true;
                     String::new()
                 }
                 Err(err) => {
@@ -1083,7 +1131,7 @@ impl WordList {
                 }
             }
 
-            let mut new_file_contents = String::new();
+            let mut new_file_contents = String::with_capacity(file_contents.capacity());
             for line in modified_lines {
                 new_file_contents.push_str(&line);
                 if use_windows_line_endings {
@@ -1105,13 +1153,11 @@ impl WordList {
                 continue;
             }
 
-            // Now that we've updated the file, store its new mtime and clear the pending
-            // updates. Note that technically this is racy since the file could have been
-            // written by someone else between when we wrote it and checked the mtime. If
-            // this happened, we could miss those updates until the file is written again
-            // or the user makes more modifications.
-            source_state.mtime = source_config.modified();
+            // Now that we've updated the file, clear the pending updates and refresh its contents
+            // from disk.
             source_state.pending_updates = HashMap::new();
+            let source_index = source_state.source_index;
+            refresh_source(source_config, source_index, &mut self.source_states);
         }
 
         // Regardless of whether we actually succeeded in syncing everything, we should
@@ -1120,7 +1166,7 @@ impl WordList {
         // pending updates are still present.
         self.sync_state = SyncState::Synced;
 
-        (should_refresh, sync_errors)
+        (should_refresh_overall, sync_errors)
     }
 
     /// Reload the word list(s) using the current config. Returns the same information as
