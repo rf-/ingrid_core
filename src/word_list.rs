@@ -183,6 +183,23 @@ impl Debug for WordListSourceState {
     }
 }
 
+impl WordListSourceState {
+    fn get_entry(&self, normalized_word: &str) -> Option<(String, u16)> {
+        if let Some(pending_update) = self.pending_updates.get(normalized_word) {
+            if let PendingWordListUpdate::AddOrUpdate { canonical, score } = pending_update {
+                Some((canonical.clone(), *score))
+            } else {
+                None
+            }
+        } else if let Some(entry_index) = self.index.get(normalized_word) {
+            let entry = &self.entries[*entry_index];
+            Some((entry.canonical.clone(), entry.score))
+        } else {
+            None
+        }
+    }
+}
+
 /// `WordListSourceState`s keyed by the `id` of the relevant source.
 pub type WordListSourceStates = HashMap<String, WordListSourceState>;
 
@@ -260,23 +277,12 @@ pub struct RawWordListContents {
 }
 
 #[must_use]
-pub fn load_words_from_source(
-    source: &WordListSourceConfig,
-    unless_disabled: bool,
-) -> RawWordListContents {
+pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListContents {
     let mtime = source.modified();
     let mut index = HashMap::new();
     let mut errors = vec![];
 
     let entries = match source {
-        WordListSourceConfig::Memory { .. }
-        | WordListSourceConfig::File { .. }
-        | WordListSourceConfig::FileContents { .. }
-            if unless_disabled && !source.enabled() =>
-        {
-            vec![]
-        }
-
         WordListSourceConfig::Memory { words, .. } => {
             let mut entries = Vec::with_capacity(words.len());
 
@@ -334,7 +340,7 @@ fn refresh_source(
         mtime,
         index,
         errors,
-    } = load_words_from_source(source, true);
+    } = load_words_from_source(source);
 
     let mut new_state = WordListSourceState {
         source_index,
@@ -821,35 +827,43 @@ impl WordList {
     }
 
     /// Update the word list state to be consistent with the given word being upserted into the
-    /// given source.
-    pub fn optimistically_update_word(&mut self, canonical: &str, score: u16, source_id: &str) {
+    /// given source. Return the source's previous entry for that normalized word, if
+    /// applicable.
+    pub fn optimistically_update_word(
+        &mut self,
+        canonical: &str,
+        score: u16,
+        source_id: &str,
+    ) -> Option<(String, u16)> {
         let normalized = normalize_word(canonical);
         if normalized.is_empty() {
-            return;
+            return None;
         }
 
         let Some(source_index) = self.find_source_index_for_id(source_id) else {
-            return;
+            return None;
         };
         let source_config = &self.source_configs[source_index as usize];
         let is_personal_list = self
             .personal_list_index
             .map_or(false, |idx| idx == source_index);
 
+        let source_id = source_config.id();
+        let Some(source_state) = self.source_states.get_mut(&source_id) else {
+            panic!("optimistically_update_word: no source state found for id");
+        };
+
+        let previous_entry = source_state.get_entry(&normalized);
+
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_id = source_config.id();
-        if let Some(source_state) = self.source_states.get_mut(&source_id) {
-            source_state.pending_updates.insert(
-                normalized.clone(),
-                PendingWordListUpdate::AddOrUpdate {
-                    canonical: canonical.into(),
-                    score,
-                },
-            );
-        } else {
-            panic!("optimistically_update_word: no source state found for id");
-        }
+        source_state.pending_updates.insert(
+            normalized.clone(),
+            PendingWordListUpdate::AddOrUpdate {
+                canonical: canonical.into(),
+                score,
+            },
+        );
         self.needs_sync = true;
 
         // If the source is disabled, we don't need to update the actual wordlist, except to set
@@ -859,7 +873,7 @@ impl WordList {
                 let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
                 self.words[length][word_id].personal_word_score = Some(score);
             }
-            return;
+            return previous_entry;
         }
 
         let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
@@ -874,20 +888,26 @@ impl WordList {
             .map_or(true, |existing_index| source_index <= existing_index);
 
         if !should_update {
-            return;
+            return previous_entry;
         }
 
         word.canonical_string = canonical.into();
         word.score = score;
         word.hidden = false;
         word.source_index = Some(source_index);
+        previous_entry
     }
 
     /// Update the word list state to be consistent with the given word being deleted from
-    /// the given source.
-    pub fn optimistically_delete_word(&mut self, normalized: &str, source_id: &str) {
+    /// the given source. Return the source's previous entry for that normalized word, if
+    /// applicable.
+    pub fn optimistically_delete_word(
+        &mut self,
+        normalized: &str,
+        source_id: &str,
+    ) -> Option<(String, u16)> {
         let Some(source_index) = self.find_source_index_for_id(source_id) else {
-            return;
+            return None;
         };
         let source_config = &self.source_configs[source_index as usize];
         let is_personal_list = self
@@ -897,13 +917,15 @@ impl WordList {
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
         let source_id = source_config.id();
-        if let Some(source_state) = self.source_states.get_mut(&source_id) {
-            source_state
-                .pending_updates
-                .insert(normalized.to_string(), PendingWordListUpdate::Delete);
-        } else {
+        let Some(source_state) = self.source_states.get_mut(&source_id) else {
             panic!("optimistically_delete_word: no source state found for id");
-        }
+        };
+
+        let previous_entry = source_state.get_entry(normalized);
+
+        source_state
+            .pending_updates
+            .insert(normalized.to_string(), PendingWordListUpdate::Delete);
         self.needs_sync = true;
 
         // If the source is disabled, we don't need to update the actual wordlist, except to clear
@@ -914,7 +936,7 @@ impl WordList {
                     self.words[normalized.chars().count()][*word_id].personal_word_score = None;
                 }
             }
-            return;
+            return previous_entry;
         }
 
         let length = normalized.chars().count();
@@ -922,7 +944,7 @@ impl WordList {
             #[cfg(feature = "check_invariants")]
             panic!("optimistically_delete_word_impl: word doesn't exist");
             #[cfg(not(feature = "check_invariants"))]
-            return;
+            return previous_entry;
         };
 
         let word = &mut self.words[length][word_id];
@@ -937,7 +959,7 @@ impl WordList {
         // either it's not present in the list at all, or it's already shadowed by a
         // higher-priority source.
         if word.source_index != Some(source_index) {
-            return;
+            return previous_entry;
         }
 
         // Otherwise, we need to look through any lower-ranked, enabled sources in order to see if
@@ -958,12 +980,13 @@ impl WordList {
             word.canonical_string = entry.canonical.clone();
             word.hidden = false;
             word.source_index = Some(other_source_index as u16);
-            return;
+            return previous_entry;
         }
 
         // If they didn't, we can safely hide it.
         word.hidden = true;
         word.source_index = None;
+        previous_entry
     }
 
     fn find_source_index_for_id(&self, source_id: &str) -> Option<u16> {
@@ -1423,9 +1446,15 @@ pub mod tests {
             assert_eq!(wharves.source_index, Some(1));
         }
 
-        word_list.optimistically_update_word("wolves", 72, "0");
-        word_list.optimistically_update_word("wharves", 73, "0");
-        word_list.optimistically_update_word("worfs", 74, "0");
+        assert_eq!(
+            word_list.optimistically_update_word("wolves", 72, "0"),
+            Some(("wolves".into(), 70))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("wharves", 73, "0"),
+            None,
+        );
+        assert_eq!(word_list.optimistically_update_word("worfs", 74, "0"), None);
 
         let worfs_id = word_list.get_word_id_or_add_hidden("worfs");
 
@@ -1448,8 +1477,14 @@ pub mod tests {
             assert_eq!(worfs.source_index, Some(0));
         }
 
-        word_list.optimistically_delete_word("wolves", "0");
-        word_list.optimistically_delete_word("worfs", "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 72))
+        );
+        assert_eq!(
+            word_list.optimistically_delete_word("worfs", "0"),
+            Some(("worfs".into(), 74))
+        );
 
         {
             let wolves = word_list.get_word(wolves_id);
@@ -1505,10 +1540,19 @@ pub mod tests {
             assert_eq!(worfs.source_index, None);
         }
 
-        word_list.optimistically_update_word("wolves", 80, "0");
-        word_list.optimistically_update_word("wolvvves", 81, "0");
-        word_list.optimistically_update_word("wharves", 82, "0");
-        word_list.optimistically_update_word("worfs", 83, "0");
+        assert_eq!(
+            word_list.optimistically_update_word("wolves", 80, "0"),
+            None // delete was still pending from before
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("wolvvves", 81, "0"),
+            Some(("wolvvves".into(), 71))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("wharves", 82, "0"),
+            Some(("wharves".into(), 73)) // add was still pending from before
+        );
+        assert_eq!(word_list.optimistically_update_word("worfs", 83, "0"), None);
 
         {
             let wolves = word_list.get_word(wolves_id);
@@ -1589,10 +1633,22 @@ pub mod tests {
             assert_eq!(what.source_index, Some(1));
         }
 
-        word_list.optimistically_update_word("wOl vEs", 60, "0");
-        word_list.optimistically_delete_word("steev", "0");
-        word_list.optimistically_update_word("Wolves", 99, "2");
-        word_list.optimistically_update_word("tonberry", 30, "2");
+        assert_eq!(
+            word_list.optimistically_update_word("wOl vEs", 60, "0"),
+            Some(("wolves".into(), 51))
+        );
+        assert_eq!(
+            word_list.optimistically_delete_word("steev", "0"),
+            Some(("steev".into(), 54))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("Wolves", 99, "2"),
+            Some(("wolves".into(), 52))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("tonberry", 30, "2"),
+            None
+        );
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wOl vEs");
@@ -1664,7 +1720,10 @@ pub mod tests {
             assert_eq!(wolves.source_index, Some(0));
         }
 
-        word_list.optimistically_delete_word("wolves", "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 51))
+        );
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
@@ -1714,8 +1773,14 @@ pub mod tests {
         let steev_id = word_list.get_word_id_or_add_hidden("steev");
 
         // See previous test
-        word_list.optimistically_delete_word("wolves", "0");
-        word_list.optimistically_update_word("Steev", 55, "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 51))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("Steev", 55, "0"),
+            Some(("steev".into(), 54))
+        );
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
@@ -1822,8 +1887,14 @@ pub mod tests {
         let idkidkidk_id = word_list.get_word_id_or_add_hidden("idkidkidk");
 
         // See previous tests
-        word_list.optimistically_delete_word("wolves", "0");
-        word_list.optimistically_update_word("Steev", 55, "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 51))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("Steev", 55, "0"),
+            Some(("steev".into(), 54))
+        );
         assert!(word_list.needs_sync);
 
         // If we replace the tempfile with a directory, it will be impossible to sync to
@@ -1900,8 +1971,18 @@ pub mod tests {
         }
 
         // Optimistic updates elevate the sync state but still don't affect the actual word list.
-        word_list.optimistically_delete_word("wolves", "0");
-        word_list.optimistically_update_word("sT eev", 51, "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 51))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("S t eev", 99, "0"),
+            Some(("steev".into(), 54))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("sT eev", 51, "0"),
+            Some(("S t eev".into(), 99))
+        );
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.score, 50);
@@ -1953,8 +2034,18 @@ pub mod tests {
 
         // This is like the last one, except that between updating the list and syncing it we
         // re-enable it. This applies the buffered changes to the resulting word list.
-        word_list.optimistically_delete_word("wolves", "0");
-        word_list.optimistically_update_word("sT eev", 51, "0");
+        assert_eq!(
+            word_list.optimistically_delete_word("wolves", "0"),
+            Some(("wolves".into(), 51))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("S t eev", 99, "0"),
+            Some(("steev".into(), 54))
+        );
+        assert_eq!(
+            word_list.optimistically_update_word("sT eev", 51, "0"),
+            Some(("S t eev".into(), 99))
+        );
         assert!(word_list.needs_sync);
 
         let (any_more_visible, less_visible_words) = word_list.replace_list(
