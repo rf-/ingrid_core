@@ -330,7 +330,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
 }
 
 /// Refresh the given source, regardless of whether it appears to need it.
-fn refresh_source(
+pub fn refresh_source(
     source: &WordListSourceConfig,
     source_index: u16,
     source_states: &mut HashMap<String, WordListSourceState>,
@@ -361,7 +361,7 @@ fn refresh_source(
 }
 
 /// Refresh the given source unless we know it hasn't been modified.
-fn refresh_source_if_needed(
+pub fn refresh_source_if_needed(
     source: &WordListSourceConfig,
     source_index: u16,
     source_states: &mut HashMap<String, WordListSourceState>,
