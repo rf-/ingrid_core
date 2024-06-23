@@ -1,6 +1,7 @@
 //! This module implements code for configuring a crossword-filling operation, independent of the
 //! specific fill algorithm.
 
+use regex::Regex;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -56,6 +57,8 @@ pub struct SlotConfig {
     pub direction: Direction,
     pub length: usize,
     pub crossings: SmallVec<[Option<Crossing>; MAX_SLOT_LENGTH]>,
+    pub min_score_override: Option<u16>,
+    pub filter_pattern: Option<Regex>,
 }
 
 impl SlotConfig {
@@ -419,62 +422,86 @@ pub fn generate_slot_configs(
             direction: entry.direction,
             length: entry.length,
             crossings,
+            min_score_override: None,
+            filter_pattern: None,
         });
     }
 
     (slot_configs, constraint_id_cache.len())
 }
 
-/// Given an input fill and an an array of slot configs, generate the possible options for each
-/// slot by starting with the complete word list and then removing words that contradict any fill
-/// that's already present in the grid.
+/// Given a single slot's fill, minimum score, and optional filter pattern, generate the possible
+/// options for that slot by starting with the complete word list and then removing words that
+/// contradict the criteria.
 pub fn generate_slot_options(
+    word_list: &mut WordList,
+    entry_fill: &[Option<GlyphId>],
+    min_score: u16,
+    filter_pattern: Option<&Regex>,
+) -> Vec<WordId> {
+    let length = entry_fill.len();
+
+    // If the slot is fully specified, we need to either use an existing word or create a new
+    // (hidden) one.
+    let complete_fill: Option<SmallVec<[GlyphId; MAX_SLOT_COUNT]>> =
+        entry_fill.iter().copied().collect();
+
+    if let Some(complete_fill) = complete_fill {
+        let word_string: String = complete_fill
+            .iter()
+            .map(|&glyph_id| word_list.glyphs[glyph_id])
+            .collect();
+
+        let (_word_length, word_id) = word_list.get_word_id_or_add_hidden(&word_string);
+
+        vec![word_id]
+    } else {
+        let options: Vec<WordId> = (0..word_list.words[length].len())
+            .filter(|&word_id| {
+                let word = &word_list.words[length][word_id];
+                if word.hidden || word.score < min_score {
+                    return false;
+                }
+
+                if let Some(filter_pattern) = filter_pattern.as_ref() {
+                    if !filter_pattern.is_match(&word.normalized_string) {
+                        return false;
+                    }
+                }
+
+                entry_fill.iter().enumerate().all(|(cell_idx, cell_fill)| {
+                    cell_fill
+                        .map(|g| g == word.glyphs[cell_idx])
+                        .unwrap_or(true)
+                })
+            })
+            .collect();
+
+        options
+    }
+}
+
+/// Given an input fill and an array of slot configs, generate the possible options for each slot
+/// by starting with the complete word list and then removing words that contradict any fill that's
+/// already present in the grid or violate criteria like minimum score or filter pattern.
+pub fn generate_all_slot_options(
     word_list: &mut WordList,
     fill: &[Option<GlyphId>],
     slot_configs: &[SlotConfig],
     grid_width: usize,
-    min_score: u16,
+    global_min_score: u16,
 ) -> SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> {
-    let mut slot_options: SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> = smallvec![];
-
-    for slot in slot_configs {
-        let entry_fill = slot.fill(fill, grid_width);
-
-        // If the slot is fully specified, we need to either use an existing word or create a new
-        // (hidden) one.
-        let complete_fill: Option<SmallVec<[GlyphId; MAX_SLOT_COUNT]>> =
-            entry_fill.iter().copied().collect();
-
-        if let Some(complete_fill) = complete_fill {
-            let word_string: String = complete_fill
-                .iter()
-                .map(|&glyph_id| word_list.glyphs[glyph_id])
-                .collect();
-
-            let (_word_length, word_id) = word_list.get_word_id_or_add_hidden(&word_string);
-
-            slot_options.push(vec![word_id]);
-        } else {
-            let options: Vec<WordId> = (0..word_list.words[slot.length].len())
-                .filter(|&word_id| {
-                    let word = &word_list.words[slot.length][word_id];
-                    if word.hidden || word.score < min_score {
-                        return false;
-                    }
-
-                    entry_fill.iter().enumerate().all(|(cell_idx, cell_fill)| {
-                        cell_fill
-                            .map(|g| g == word.glyphs[cell_idx])
-                            .unwrap_or(true)
-                    })
-                })
-                .collect();
-
-            slot_options.push(options);
-        }
-    }
-
-    slot_options
+    slot_configs
+        .iter()
+        .map(|slot| {
+            generate_slot_options(
+                word_list,
+                &slot.fill(fill, grid_width),
+                slot.min_score_override.unwrap_or(global_min_score),
+                slot.filter_pattern.as_ref(),
+            )
+        })
+        .collect()
 }
 
 /// Generate an `OwnedGridConfig` representing a grid with specified entries.
@@ -499,7 +526,7 @@ pub fn generate_grid_config<'a>(
         .collect();
 
     let mut slot_options =
-        generate_slot_options(&mut word_list, &fill, &slot_configs, width, min_score);
+        generate_all_slot_options(&mut word_list, &fill, &slot_configs, width, min_score);
 
     sort_slot_options(&word_list, &slot_configs, &mut slot_options);
 
