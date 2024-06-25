@@ -5,6 +5,7 @@ use ingrid_core::word_list::{WordList, WordListSourceConfig};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
+use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
@@ -64,6 +65,8 @@ fn main() -> Result<(), Error> {
     let width = raw_grid_content.lines().next().unwrap().chars().count() - 1;
     let max_side = width.max(height);
 
+    let word_list_start = Instant::now();
+
     let word_list = WordList::new(
         &[match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
@@ -77,6 +80,8 @@ fn main() -> Result<(), Error> {
         }],
         Some(max_side),
     );
+
+    println!("Loaded word list in {:?}", word_list_start.elapsed());
 
     #[allow(clippy::comparison_chain)]
     if let Some(errors) = word_list.get_source_errors().get("0") {
@@ -95,11 +100,20 @@ fn main() -> Result<(), Error> {
         return Err(Error("Word list is empty".into()));
     }
 
+    let config_start = Instant::now();
+
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
 
+    println!("Prepared options in {:?}", config_start.elapsed());
+
+    let fill_start = Instant::now();
+
     let result = find_fill(&grid_config.to_config_ref(), None)
         .map_err(|_| Error("Unfillable grid".into()))?;
+
+    println!("Completed fill attempt in {:?}", fill_start.elapsed());
+    println!("Total time: {:?}", word_list_start.elapsed());
 
     println!(
         "{}",
