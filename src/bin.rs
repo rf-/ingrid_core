@@ -23,10 +23,6 @@ struct Args {
     /// Minimum allowable word score
     #[arg(long, default_value_t = 50)]
     min_score: u16,
-
-    /// Maximum shared substring length between entries [default: none]
-    #[arg(long)]
-    max_shared_substring: Option<usize>,
 }
 
 struct Error(String);
@@ -68,31 +64,18 @@ fn main() -> Result<(), Error> {
     let width = raw_grid_content.lines().next().unwrap().chars().count() - 1;
     let max_side = width.max(height);
 
-    if !args
-        .max_shared_substring
-        .map_or(true, |mss| (3..=10).contains(&mss))
-    {
-        return Err(Error(
-            "If given, max shared substring must be between 3 and 10".into(),
-        ));
-    }
-
     let word_list = WordList::new(
-        vec![match args.wordlist {
+        &[match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
                 id: "0".into(),
-                enabled: true,
                 path: wordlist_path.into(),
             },
             None => WordListSourceConfig::FileContents {
                 id: "0".into(),
-                enabled: true,
                 contents: STWL_RAW,
             },
         }],
-        None,
         Some(max_side),
-        args.max_shared_substring,
     );
 
     #[allow(clippy::comparison_chain)]

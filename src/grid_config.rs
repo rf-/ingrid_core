@@ -1,12 +1,9 @@
 //! This module implements code for configuring a crossword-filling operation, independent of the
 //! specific fill algorithm.
 
-use regex::Regex;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 #[cfg(feature = "serde")]
 use serde_derive::{Deserialize, Serialize};
@@ -57,8 +54,6 @@ pub struct SlotConfig {
     pub direction: Direction,
     pub length: usize,
     pub crossings: SmallVec<[Option<Crossing>; MAX_SLOT_LENGTH]>,
-    pub min_score_override: Option<u16>,
-    pub filter_pattern: Option<Regex>,
 }
 
 impl SlotConfig {
@@ -143,9 +138,6 @@ pub struct GridConfig<'a> {
 
     /// The number of distinct crossings represented in all of the `slot_configs`.
     pub crossing_count: usize,
-
-    /// An optional atomic flag that can be set to signal that the fill operation should be canceled.
-    pub abort: Option<&'a AtomicBool>,
 }
 
 /// A struct that owns a copy of each piece of information needed by `GridConfig`.
@@ -157,7 +149,6 @@ pub struct OwnedGridConfig {
     pub width: usize,
     pub height: usize,
     pub crossing_count: usize,
-    pub abort: Option<Arc<AtomicBool>>,
 }
 
 impl OwnedGridConfig {
@@ -172,7 +163,6 @@ impl OwnedGridConfig {
             width: self.width,
             height: self.height,
             crossing_count: self.crossing_count,
-            abort: self.abort.as_deref(),
         }
     }
 }
@@ -422,8 +412,6 @@ pub fn generate_slot_configs(
             direction: entry.direction,
             length: entry.length,
             crossings,
-            min_score_override: None,
-            filter_pattern: None,
         });
     }
 
@@ -437,7 +425,6 @@ pub fn generate_slot_options(
     word_list: &mut WordList,
     entry_fill: &[Option<GlyphId>],
     min_score: u16,
-    filter_pattern: Option<&Regex>,
 ) -> Vec<WordId> {
     let length = entry_fill.len();
 
@@ -452,21 +439,15 @@ pub fn generate_slot_options(
             .map(|&glyph_id| word_list.glyphs[glyph_id])
             .collect();
 
-        let (_word_length, word_id) = word_list.get_word_id_or_add_hidden(&word_string);
+        let (_word_length, word_id) = word_list.get_word_id_or_add_word(&word_string);
 
         vec![word_id]
     } else {
         let options: Vec<WordId> = (0..word_list.words[length].len())
             .filter(|&word_id| {
                 let word = &word_list.words[length][word_id];
-                if word.hidden || word.score < min_score {
+                if word.score < min_score {
                     return false;
-                }
-
-                if let Some(filter_pattern) = filter_pattern.as_ref() {
-                    if !filter_pattern.is_match(&word.normalized_string) {
-                        return false;
-                    }
                 }
 
                 entry_fill.iter().enumerate().all(|(cell_idx, cell_fill)| {
@@ -494,12 +475,7 @@ pub fn generate_all_slot_options(
     slot_configs
         .iter()
         .map(|slot| {
-            generate_slot_options(
-                word_list,
-                &slot.fill(fill, grid_width),
-                slot.min_score_override.unwrap_or(global_min_score),
-                slot.filter_pattern.as_ref(),
-            )
+            generate_slot_options(word_list, &slot.fill(fill, grid_width), global_min_score)
         })
         .collect()
 }
@@ -538,7 +514,6 @@ pub fn generate_grid_config<'a>(
         width,
         height,
         crossing_count,
-        abort: None,
     }
 }
 

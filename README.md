@@ -66,8 +66,6 @@ Options:
           Path to a scored wordlist file [default: (embedded copy of Spread the Wordlist)]
       --min-score <MIN_SCORE>
           Minimum allowable word score [default: 50]
-      --max-shared-substring <MAX_SHARED_SUBSTRING>
-          Maximum shared substring length between entries [default: none]
   -h, --help
           Print help information
   -V, --version

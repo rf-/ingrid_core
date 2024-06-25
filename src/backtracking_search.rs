@@ -9,9 +9,7 @@ use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use smallvec::SmallVec;
 use std::collections::HashSet;
-use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::sync::atomic::Ordering;
+use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
 use crate::arc_consistency::{
@@ -89,23 +87,6 @@ pub struct Slot {
     fixed_glyph_counts_by_cell: Option<GlyphCountsByCell>,
 }
 
-impl Debug for Slot {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Slot")
-            .field("id", &self.id)
-            .field(
-                "eliminations",
-                &format!(
-                    "({} eliminations)",
-                    self.eliminations.iter().flatten().count()
-                ),
-            )
-            .field("remaining_option_count", &self.remaining_option_count)
-            .field("fixed_word_id", &self.fixed_word_id)
-            .finish_non_exhaustive()
-    }
-}
-
 impl Slot {
     /// Record that a word is unavailable for a slot, along with the slot id responsible so that we
     /// can roll it back if we backtrack the relevant decision.
@@ -115,12 +96,6 @@ impl Slot {
         word_id: WordId,
         blamed_slot_id: Option<SlotId>,
     ) {
-        #[cfg(feature = "check_invariants")]
-        assert!(
-            self.fixed_word_id.is_none() && self.fixed_glyph_counts_by_cell.is_none(),
-            "Editing eliminations for a fixed slot?"
-        );
-
         self.eliminations[word_id] = Some(blamed_slot_id);
         self.remaining_option_count -= 1;
 
@@ -132,12 +107,6 @@ impl Slot {
 
     /// Record that a word is now available again for this slot.
     fn remove_elimination(&mut self, config: &GridConfig, word_id: WordId) {
-        #[cfg(feature = "check_invariants")]
-        assert!(
-            self.fixed_word_id.is_none() && self.fixed_glyph_counts_by_cell.is_none(),
-            "Editing eliminations for a fixed slot?"
-        );
-
         self.eliminations[word_id] = None;
         self.remaining_option_count += 1;
 
@@ -182,18 +151,6 @@ impl Slot {
             })
             .or_else(|| {
                 if self.remaining_option_count == 1 {
-                    #[cfg(feature = "check_invariants")]
-                    {
-                        assert_eq!(
-                            config.slot_options[self.id]
-                                .iter()
-                                .filter(|&&word_id| self.eliminations[word_id].is_none())
-                                .count(),
-                            1,
-                            "slot with one remaining option must have eliminations for all others"
-                        );
-                    }
-
                     let word_id = config.slot_options[self.id]
                         .iter()
                         .find(|&&word_id| self.eliminations[word_id].is_none());
@@ -298,28 +255,6 @@ fn maintain_arc_consistency(
             eliminations: &HashSet<WordId>,
         ) -> Option<WordId> {
             self.slots[slot_id].fixed_word_id.or_else(|| {
-                #[cfg(feature = "check_invariants")]
-                {
-                    let first_two = self.config.slot_options[slot_id]
-                        .iter()
-                        .filter(|&word_id| {
-                            self.slots[slot_id].eliminations[*word_id].is_none()
-                                && !eliminations.contains(word_id)
-                        })
-                        .copied()
-                        .take(2)
-                        .collect::<Vec<_>>();
-
-                    assert_eq!(
-                        first_two.len(),
-                        1,
-                        "get_single_option: called with slot that had multiple options",
-                    );
-
-                    Some(first_two[0])
-                }
-
-                #[cfg(not(feature = "check_invariants"))]
                 self.config.slot_options[slot_id]
                     .iter()
                     .find(|&word_id| {
@@ -510,7 +445,6 @@ pub struct FillSuccess {
 pub enum FillFailure {
     HardFailure,
     Timeout,
-    Abort,
     ExceededBacktrackLimit(usize),
 }
 
@@ -559,11 +493,6 @@ pub fn find_fill_for_seed(
                 if Instant::now() > deadline {
                     return Err(FillFailure::Timeout);
                 }
-            }
-        }
-        if let Some(abort) = config.abort {
-            if abort.load(Ordering::Relaxed) {
-                return Err(FillFailure::Abort);
             }
         }
 
@@ -615,8 +544,7 @@ pub fn find_fill_for_seed(
 
         assert!(
             !word_candidates.is_empty(),
-            "Unable to find option for slot {:?}",
-            slots[slot_id]
+            "Unable to find option for slot",
         );
 
         // Choose one of the candidates at (weighted) random.
@@ -803,20 +731,15 @@ pub fn find_fill(
 
 #[cfg(test)]
 mod tests {
-    use crate::backtracking_search::{find_fill, FillFailure};
+    use crate::backtracking_search::find_fill;
     use crate::grid_config::{
         generate_grid_config_from_template_string, render_grid, OwnedGridConfig,
     };
-    use crate::types::GlobalWordId;
     use crate::word_list::tests::{dictionary_path, word_list_source_config};
     use crate::word_list::{WordList, WordListSourceConfig};
-    use indoc::indoc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
 
     fn load_word_list(max_length: usize) -> WordList {
-        let word_list = WordList::new(word_list_source_config(), None, Some(max_length), Some(5));
+        let word_list = WordList::new(&word_list_source_config(), Some(max_length));
         let word_list_errors = word_list.get_source_errors().get("0").unwrap().clone();
         assert!(
             word_list_errors.is_empty(),
@@ -829,13 +752,11 @@ mod tests {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        let mut config = generate_grid_config_from_template_string(
+        generate_grid_config_from_template_string(
             load_word_list(width.max(height)),
             template,
             min_score,
-        );
-        config.abort = Some(Arc::new(AtomicBool::new(false)));
-        config
+        )
     }
 
     fn generate_config(template: &str) -> OwnedGridConfig {
@@ -1111,111 +1032,6 @@ mod tests {
     }
 
     #[test]
-    fn test_abort_fill_attempt() {
-        let grid_config = generate_config_with_min_score(
-            "
-            .......##......
-            admirers#......
-            .......t.......
-            .....#.i...#...
-            ....#..c..#....
-            ...#...k.#.....
-            ###....y......#
-            ##.....f.....##
-            #......i....###
-            .....#.n...#...
-            ....#..g..#....
-            ...#...e.#.....
-            .......r.......
-            ......#s.......
-            ......##.......
-            ",
-            50,
-        );
-
-        let abort = grid_config.abort.clone().unwrap();
-        let start = Instant::now();
-
-        let thread = std::thread::spawn(move || find_fill(&grid_config.to_config_ref(), None));
-
-        std::thread::sleep(Duration::from_secs(1));
-        abort.store(true, Ordering::Relaxed);
-
-        let result = thread.join().unwrap().unwrap_err();
-        let time = start.elapsed();
-
-        assert!(matches!(result, FillFailure::Abort));
-        println!("Aborted in {time:?}");
-    }
-
-    #[test]
-    fn test_add_extra_dupe_rules() {
-        let mut grid_config = generate_config(
-            "
-            #..s###
-            #..i.##
-            ...m...
-            .......
-            .......
-            ##....#
-            ###...#
-            ",
-        );
-
-        let result_1 =
-            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
-
-        // Obviously we'll have to rewrite this test if the algorithm changes in
-        // a way that affects the output, but w/e.
-        assert_eq!(
-            render_grid(&grid_config.to_config_ref(), &result_1.choices),
-            indoc! {"
-            .fas...
-            .abit..
-            airmass
-            troikas
-            sealers
-            ..deme.
-            ...see.
-            "}
-            .trim()
-        );
-
-        let get_id = |word_list: &WordList, word_str: &str| -> GlobalWordId {
-            (
-                word_str.len(),
-                *word_list.word_id_by_string.get(word_str).unwrap(),
-            )
-        };
-
-        let airmass_id = get_id(&grid_config.word_list, "airmass");
-        let fas_id = get_id(&grid_config.word_list, "fas");
-
-        grid_config
-            .word_list
-            .dupe_index
-            .as_mut()
-            .add_dupe_pair(airmass_id, fas_id);
-
-        let result_2 =
-            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
-
-        assert_eq!(
-            render_grid(&grid_config.to_config_ref(), &result_2.choices),
-            indoc! {"
-            .zas...
-            .abit..
-            airmass
-            troikas
-            sealers
-            ..dere.
-            ...sse.
-            "}
-            .trim()
-        );
-    }
-
-    #[test]
     fn test_unusual_characters() {
         let template = "
             #...###
@@ -1229,21 +1045,17 @@ mod tests {
         .trim();
 
         let word_list = WordList::new(
-            vec![
+            &[
                 WordListSourceConfig::Memory {
                     id: "0".into(),
-                    enabled: true,
                     words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
                 },
                 WordListSourceConfig::File {
                     id: "1".into(),
-                    enabled: true,
                     path: dictionary_path().into(),
                 },
             ],
-            None,
             Some(7),
-            None,
         );
 
         let grid_config = generate_grid_config_from_template_string(word_list, template, 40);

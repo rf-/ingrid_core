@@ -6,8 +6,7 @@
 //!   options for 1A that start with the letter A.
 //!
 //! - For each slot that has been reduced to one option, we've removed all options from other slots
-//!   that are incompatible because of dupe rules (either because they are identical to that option
-//!   or share a specified number of chars in a row).
+//!   that are identical with that option.
 //!
 //! We keep applying these rules until no more eliminations are possible.
 
@@ -184,16 +183,6 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         }
     }
 
-    #[cfg(feature = "check_invariants")]
-    for (slot_id, &fixed) in fixed_slots.iter().enumerate() {
-        if !fixed {
-            continue;
-        }
-        adapter
-            .get_single_option(slot_id, &slot_states[slot_id].eliminations)
-            .expect("fixed slot must have exactly one option");
-    }
-
     // Whenever we eliminate an option from a slot, we need to do some bookkeeping and potentially
     // enqueue cells from that slot for further propagation.
     let eliminate_word = |slot_states: &mut [ArcConsistencySlotState],
@@ -303,12 +292,9 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // * A regular AC-3 pass that propagates constraints between crossing words based on the letters
     //   available in their shared cells.
     //
-    // * A singleton propagation pass that applies uniqueness rules (and potentially any other
-    //   special constraints we want to add later) to slots that now only have a single option. This
-    //   is a separate phase because these rules are difficult or impossible to fit into our AC-3
-    //   structure without spoiling our ability to check option viability in constant time, and also
-    //   because the vast majority of the benefit in terms of pruning will happen only in cases
-    //   where a slot is limited to a single option.
+    // * A singleton propagation pass that applies the uniqueness rule to slots that now only have
+    //   a single option. This is a separate phase because this rule is difficult to fit into our
+    //   AC-3 loop while preserving our ability to check option viability in constant time.
     //
     // Once we've run both passes without enqueueing anything for either, we know we're done with
     // the overall process.
@@ -399,35 +385,27 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 .get_single_option(slot_id, &slot_states[slot_id].eliminations)
                 .expect("slot with `needs_singleton_propagation` must have exactly one option");
 
-            let dupes_by_length = config
-                .word_list
-                .dupe_index
-                .get_dupes_by_length((slot_config.length, word_id));
-
             for other_slot_id in 0..config.slot_configs.len() {
                 if other_slot_id == slot_id || fixed_slots[other_slot_id] {
                     continue;
                 }
 
-                let later_slot_config = &config.slot_configs[other_slot_id];
-                let later_slot_options = &config.slot_options[other_slot_id];
+                let other_slot_config = &config.slot_configs[other_slot_id];
+                if other_slot_config.length != slot_config.length {
+                    continue;
+                }
 
-                if let Some(dupe_ids) = dupes_by_length.get(&later_slot_config.length) {
-                    for &word_id in later_slot_options {
-                        if !adapter.is_word_eliminated(other_slot_id, word_id)
-                            && dupe_ids.contains(&word_id)
-                            && !slot_states[other_slot_id].eliminations.contains(&word_id)
-                        {
-                            eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
-                        }
+                let other_slot_options = &config.slot_options[other_slot_id];
+
+                for &slot_word_id in other_slot_options {
+                    if slot_word_id == word_id
+                        && !adapter.is_word_eliminated(other_slot_id, word_id)
+                        && !slot_states[other_slot_id].eliminations.contains(&word_id)
+                    {
+                        eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
                     }
                 }
             }
-
-            // Any other special constraints could also be added here (e.g., two words not being
-            // allowed to appear together). Any kind of constraint is OK as long as it's
-            // symmetrical, since we assume that enforcing a constraint in one direction makes it
-            // unnecessary to recheck in the other direction.
         }
 
         // If we no longer need either kind of propagation, we're done; otherwise, we return to the
@@ -537,12 +515,7 @@ mod tests {
         let template = template.trim();
         let width = template.lines().map(str::len).max().unwrap();
         let height = template.lines().count();
-        let word_list = WordList::new(
-            word_list_source_config(),
-            None,
-            Some(width.max(height)),
-            Some(5),
-        );
+        let word_list = WordList::new(&word_list_source_config(), Some(width.max(height)));
 
         generate_grid_config_from_template_string(word_list, template, 40)
     }

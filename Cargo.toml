@@ -49,5 +49,4 @@ name = "ingrid_core"
 path = "src/bin.rs"
 
 [features]
-check_invariants = []
 serde = ["dep:serde", "dep:serde_derive"]
