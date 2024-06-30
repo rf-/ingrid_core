@@ -3,7 +3,7 @@
 
 use regex::Regex;
 use smallvec::{smallvec, SmallVec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -432,12 +432,15 @@ pub fn generate_slot_configs(
 
 /// Given a single slot's fill, minimum score, and optional filter pattern, generate the possible
 /// options for that slot by starting with the complete word list and then removing words that
-/// contradict the criteria.
+/// contradict the criteria. If `allowed_word_ids` is provided, the given words will be included in
+/// the options as long as they don't contradict the fill, regardless of whether they match the min
+/// score and filter pattern.
 pub fn generate_slot_options(
     word_list: &mut WordList,
     entry_fill: &[Option<GlyphId>],
     min_score: u16,
     filter_pattern: Option<&Regex>,
+    allowed_word_ids: Option<&HashSet<WordId>>,
 ) -> Vec<WordId> {
     let length = entry_fill.len();
 
@@ -459,13 +462,19 @@ pub fn generate_slot_options(
         let options: Vec<WordId> = (0..word_list.words[length].len())
             .filter(|&word_id| {
                 let word = &word_list.words[length][word_id];
-                if word.hidden || word.score < min_score {
-                    return false;
-                }
+                let enforce_criteria = allowed_word_ids.map_or(true, |allowed_word_ids| {
+                    !allowed_word_ids.contains(&word_id)
+                });
 
-                if let Some(filter_pattern) = filter_pattern.as_ref() {
-                    if !filter_pattern.is_match(&word.normalized_string) {
+                if enforce_criteria {
+                    if word.hidden || word.score < min_score {
                         return false;
+                    }
+
+                    if let Some(filter_pattern) = filter_pattern.as_ref() {
+                        if !filter_pattern.is_match(&word.normalized_string) {
+                            return false;
+                        }
                     }
                 }
 
@@ -499,6 +508,7 @@ pub fn generate_all_slot_options(
                 &slot.fill(fill, grid_width),
                 slot.min_score_override.unwrap_or(global_min_score),
                 slot.filter_pattern.as_ref(),
+                None,
             )
         })
         .collect()
