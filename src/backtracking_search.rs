@@ -709,9 +709,19 @@ pub fn find_fill_for_seed(
 pub fn find_fill(
     config: &GridConfig,
     timeout: Option<Duration>,
+    elimination_sets: Option<&mut [EliminationSet]>,
 ) -> Result<FillSuccess, FillFailure> {
     let start = Instant::now();
     let deadline = timeout.map(|timeout| start + timeout);
+
+    let mut owned_elimination_sets: Option<Vec<EliminationSet>> = None;
+    let elimination_sets = elimination_sets.unwrap_or_else(|| {
+        owned_elimination_sets = Some(EliminationSet::build_all(
+            config.slot_configs,
+            config.word_list,
+        ));
+        owned_elimination_sets.as_mut().unwrap()
+    });
 
     // Create basic Slot structs for the grid, which we can copy for each retry instead of having
     // to regenerate from scratch.
@@ -754,10 +764,6 @@ pub fn find_fill(
     // shared between retries so that we can learn from each one.
     let mut crossing_weights: Vec<f32> = (0..config.crossing_count).map(|_| 1.0).collect();
 
-    // Build elimination sets that can be shared during all arc consistency calculations for the
-    // whole fill attempt.
-    let mut eliminations = EliminationSet::build_all(config.slot_configs, config.word_list);
-
     // Establish initial arc consistency (including dupe-checking). If we can't even do that, we're
     // obviously not going to be able to find a fill.
     let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
@@ -769,7 +775,7 @@ pub fn find_fill(
         &slot_weights,
         &ArcConsistencyMode::Initial,
         &mut initial_arc_consistency_time,
-        &mut eliminations,
+        elimination_sets,
     ) {
         return Err(FillFailure::HardFailure);
     }
@@ -788,7 +794,7 @@ pub fn find_fill(
             max_backtracks,
             retry_num,
             &mut crossing_weights,
-            &mut eliminations,
+            elimination_sets,
         ) {
             Ok(mut result) => {
                 result.statistics.retries = retry_num as usize;
@@ -862,7 +868,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -883,7 +890,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -905,7 +913,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -928,7 +937,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -951,7 +961,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -974,7 +985,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
     }
@@ -993,7 +1005,8 @@ mod tests {
             ",
         );
 
-        find_fill(&grid_config.to_config_ref(), None).expect_err("Found an impossible fill??");
+        find_fill(&grid_config.to_config_ref(), None, None)
+            .expect_err("Found an impossible fill??");
     }
 
     #[test]
@@ -1018,7 +1031,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -1049,7 +1063,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -1080,7 +1095,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -1111,7 +1127,8 @@ mod tests {
             ",
         );
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(
@@ -1146,7 +1163,8 @@ mod tests {
         let abort = grid_config.abort.clone().unwrap();
         let start = Instant::now();
 
-        let thread = std::thread::spawn(move || find_fill(&grid_config.to_config_ref(), None));
+        let thread =
+            std::thread::spawn(move || find_fill(&grid_config.to_config_ref(), None, None));
 
         std::thread::sleep(Duration::from_secs(1));
         abort.store(true, Ordering::Relaxed);
@@ -1173,7 +1191,7 @@ mod tests {
         );
 
         let result_1 =
-            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         // Obviously we'll have to rewrite this test if the algorithm changes in
         // a way that affects the output, but w/e.
@@ -1208,7 +1226,7 @@ mod tests {
             .add_dupe_pair(airmass_id, fas_id);
 
         let result_2 =
-            find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         assert_eq!(
             render_grid(&grid_config.to_config_ref(), &result_2.choices),
@@ -1258,7 +1276,8 @@ mod tests {
 
         let grid_config = generate_grid_config_from_template_string(word_list, template, 40);
 
-        let result = find_fill(&grid_config.to_config_ref(), None).expect("Failed to find a fill");
+        let result =
+            find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
 
         println!("{:?}", result.statistics);
         println!(

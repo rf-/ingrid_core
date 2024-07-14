@@ -115,7 +115,7 @@ fn main() -> Result<(), Error> {
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, args.min_score);
 
-    let result = find_fill(&grid_config.to_config_ref(), None)
+    let result = find_fill(&grid_config.to_config_ref(), None, None)
         .map_err(|_| Error("Unfillable grid".into()))?;
 
     println!(
