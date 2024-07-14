@@ -14,13 +14,68 @@
 use float_ord::FloatOrd;
 use smallvec::{smallvec, SmallVec};
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Debug;
 
 use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
+
+/// Structure for tracking words eliminated from a given slot while establishing arc consistency.
+pub struct EliminationSet {
+    /// Vec indexed by WordId, tracking whether the relevant word has been eliminated.
+    eliminations_by_id: Vec<bool>,
+
+    /// Vec containing the ids of words that have been eliminated, in no particular order.
+    pub eliminated_ids: Vec<WordId>,
+}
+
+impl EliminationSet {
+    /// Build a set for a slot with the given number of options. This is based on the total number
+    /// of words of the relevant length in `WordList`, not the number of options the slot has at a
+    /// given time, since `eliminations_by_id` needs to be indexable by any known `WordId`.
+    #[must_use]
+    pub fn new(size: usize) -> EliminationSet {
+        EliminationSet {
+            eliminations_by_id: vec![false; size],
+            eliminated_ids: Vec::with_capacity(size),
+        }
+    }
+
+    /// Record that the given word has been eliminated for this slot.
+    pub fn add_elimination(&mut self, id: WordId) {
+        if !self.eliminations_by_id[id] {
+            self.eliminations_by_id[id] = true;
+            self.eliminated_ids.push(id);
+        }
+    }
+
+    /// Restore the set to an empty state.
+    pub fn reset_eliminations(&mut self) {
+        let size = self.eliminations_by_id.len();
+
+        // It's not necessary to zero the entire `eliminations_by_id` array if only a few words
+        // were eliminated, but it's presumably more efficient to use `resize()` if most of the
+        // array needs to be reset, so we use a heuristic to decide.
+        if self.eliminated_ids.len() < (size / 4) {
+            for &id in &self.eliminated_ids {
+                self.eliminations_by_id[id] = false;
+            }
+            self.eliminated_ids.clear();
+        } else {
+            self.eliminations_by_id.clear();
+            self.eliminations_by_id.resize(size, false);
+            self.eliminated_ids.clear();
+        }
+    }
+
+    /// Has the given word been eliminated?
+    #[must_use]
+    pub fn contains(&self, id: WordId) -> bool {
+        self.eliminations_by_id[id]
+    }
+}
 
 /// Interface that needs to be implemented by callers to `establish_arc_consistency` to provide
 /// context about the state of the grid before this call.
@@ -34,14 +89,7 @@ pub trait ArcConsistencyAdapter {
 
     /// What is the single remaining option for this slot, given eliminations made both before and
     /// during the arc-consistency process (with the latter provided as a param)?
-    fn get_single_option(&self, slot_id: SlotId, eliminations: &HashSet<WordId>) -> Option<WordId>;
-}
-
-/// Result from a successful call to `establish_arc_consistency`, reflecting which words need to be
-/// eliminated from each slot.
-#[derive(Debug)]
-pub struct ArcConsistencySuccess {
-    pub eliminations: Vec<HashSet<WordId>>,
+    fn get_single_option(&self, slot_id: SlotId, eliminations: &EliminationSet) -> Option<WordId>;
 }
 
 /// Result from a failed call to `establish_arc_consistency`, reflecting how responsible each
@@ -52,17 +100,17 @@ pub struct ArcConsistencyFailure {
 }
 
 /// Result from a call to `establish_arc_consistency`.
-pub type ArcConsistencyResult = Result<ArcConsistencySuccess, ArcConsistencyFailure>;
+pub type ArcConsistencyResult = Result<(), ArcConsistencyFailure>;
 
 /// Struct tracking the state of a given slot during the process of establishing arc consistency.
-struct ArcConsistencySlotState {
+struct ArcConsistencySlotState<'a> {
     /// The id of the underlying slot; this is an index into various slices passed into
     /// `establish_arc_consistency`.
     slot_id: SlotId,
 
     /// The set of words eliminated as part of this process. This doesn't include anything that was
     /// already eliminated beforehand.
-    eliminations: HashSet<WordId>,
+    eliminations: &'a mut EliminationSet,
 
     /// A map from each cell index to the number of eliminations its crossing has added to this slot
     /// so far. This is used to calculate new crossing weights if the propagation process fails.
@@ -85,7 +133,7 @@ struct ArcConsistencySlotState {
     needs_singleton_propagation: bool,
 }
 
-impl ArcConsistencySlotState {
+impl<'a> ArcConsistencySlotState<'a> {
     /// Get the current glyph counts for this slot, lazily fetching initial values from the adapter
     /// if needed.
     #[inline(always)]
@@ -105,6 +153,7 @@ impl ArcConsistencySlotState {
 /// If it's impossible to make the grid consistent, return weight values reflecting which
 /// constraints are responsible for the failure (sort of).
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     config: &GridConfig,
     adapter: &Adapter,
@@ -131,18 +180,25 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // of that. If it doesn't have a value, it means we need to establish global arc consistency by
     // checking every slot in the grid.
     evaluating_slot: Option<SlotId>,
+
+    // For each slot, a mutable reference to a structure for storing eliminations.
+    elimination_sets: &mut [EliminationSet],
 ) -> ArcConsistencyResult {
     let mut slot_states: SmallVec<[ArcConsistencySlotState; MAX_SLOT_COUNT]> = config
         .slot_configs
         .iter()
-        .map(|slot_config| ArcConsistencySlotState {
-            slot_id: slot_config.id,
-            eliminations: HashSet::with_capacity(initial_option_counts[slot_config.id] / 2),
-            blame_counts: smallvec![0; slot_config.length],
-            option_count: initial_option_counts[slot_config.id],
-            glyph_counts_by_cell: None,
-            queued_cell_idxs: None,
-            needs_singleton_propagation: false,
+        .zip(elimination_sets.iter_mut())
+        .map(|(slot_config, elimination_set)| {
+            elimination_set.reset_eliminations();
+            ArcConsistencySlotState {
+                slot_id: slot_config.id,
+                eliminations: elimination_set,
+                blame_counts: smallvec![0; slot_config.length],
+                option_count: initial_option_counts[slot_config.id],
+                glyph_counts_by_cell: None,
+                queued_cell_idxs: None,
+                needs_singleton_propagation: false,
+            }
         })
         .collect();
 
@@ -190,7 +246,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             continue;
         }
         adapter
-            .get_single_option(slot_id, &slot_states[slot_id].eliminations)
+            .get_single_option(slot_id, slot_states[slot_id].eliminations)
             .expect("fixed slot must have exactly one option");
     }
 
@@ -203,7 +259,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
      -> Result<(), ArcConsistencyFailure> {
         let slot_config = &config.slot_configs[slot_id];
 
-        slot_states[slot_id].eliminations.insert(word_id);
+        slot_states[slot_id].eliminations.add_elimination(word_id);
         slot_states[slot_id].option_count -= 1;
         if let Some(blamed_cell_idx) = blamed_cell_idx {
             slot_states[slot_id].blame_counts[blamed_cell_idx] += 1;
@@ -357,7 +413,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                     if adapter.is_word_eliminated(other_slot_id, slot_option_word_id)
                         || slot_states[other_slot_id]
                             .eliminations
-                            .contains(&slot_option_word_id)
+                            .contains(slot_option_word_id)
                     {
                         continue;
                     }
@@ -396,7 +452,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         for slot_id in singleton_propagation_slot_ids {
             let slot_config = &config.slot_configs[slot_id];
             let word_id = adapter
-                .get_single_option(slot_id, &slot_states[slot_id].eliminations)
+                .get_single_option(slot_id, slot_states[slot_id].eliminations)
                 .expect("slot with `needs_singleton_propagation` must have exactly one option");
 
             let dupes_by_length = config
@@ -416,7 +472,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                     for &word_id in later_slot_options {
                         if !adapter.is_word_eliminated(other_slot_id, word_id)
                             && dupe_ids.contains(&word_id)
-                            && !slot_states[other_slot_id].eliminations.contains(&word_id)
+                            && !slot_states[other_slot_id].eliminations.contains(word_id)
                         {
                             eliminate_word(&mut slot_states, other_slot_id, word_id, None)?;
                         }
@@ -439,12 +495,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
         }
     }
 
-    Ok(ArcConsistencySuccess {
-        eliminations: slot_states
-            .into_iter()
-            .map(|slot_state| slot_state.eliminations)
-            .collect(),
-    })
+    Ok(())
 }
 
 /// Return a set of options to eliminate for each slot in the given grid config in order to
@@ -452,7 +503,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
 #[allow(dead_code)]
 pub fn establish_arc_consistency_for_static_grid(
     config: &GridConfig,
-) -> Result<Vec<HashSet<WordId>>, ArcConsistencyFailure> {
+) -> Result<Vec<EliminationSet>, ArcConsistencyFailure> {
     struct Adapter<'a> {
         config: &'a GridConfig<'a>,
     }
@@ -473,11 +524,11 @@ pub fn establish_arc_consistency_for_static_grid(
         fn get_single_option(
             &self,
             slot_id: SlotId,
-            eliminations: &HashSet<WordId>,
+            eliminations: &EliminationSet,
         ) -> Option<WordId> {
             self.config.slot_options[slot_id]
                 .iter()
-                .find(|word_id| !eliminations.contains(word_id))
+                .find(|word_id| !eliminations.contains(**word_id))
                 .copied()
         }
     }
@@ -511,6 +562,12 @@ pub fn establish_arc_consistency_for_static_grid(
         })
         .collect();
 
+    let mut eliminations: Vec<EliminationSet> = config
+        .slot_configs
+        .iter()
+        .map(|slot_config| EliminationSet::new(config.word_list.words[slot_config.length].len()))
+        .collect();
+
     let adapter = Adapter { config };
 
     establish_arc_consistency(
@@ -521,8 +578,9 @@ pub fn establish_arc_consistency_for_static_grid(
         &slot_weights,
         &fixed_slots,
         None,
+        &mut eliminations,
     )
-    .map(|ArcConsistencySuccess { eliminations }| eliminations)
+    .map(|()| eliminations)
 }
 
 #[cfg(test)]
@@ -586,7 +644,7 @@ mod tests {
         println!("Slot options eliminated in {:?}", start.elapsed());
 
         for (slot_id, slot_options) in grid_config.slot_options.iter_mut().enumerate() {
-            slot_options.retain(|word_id| !eliminations_by_slot[slot_id].contains(word_id));
+            slot_options.retain(|word_id| !eliminations_by_slot[slot_id].contains(*word_id));
         }
 
         println!("Options pruned in {:?}", start.elapsed() - checkpoint);

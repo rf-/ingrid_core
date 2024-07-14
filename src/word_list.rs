@@ -404,10 +404,10 @@ pub struct WordList {
     /// A map from a normalized string to the id of the Word representing it.
     pub word_id_by_string: HashMap<String, WordId>,
 
-    /// A dupe index reflecting the max substring length provided when configuring the WordList.
+    /// A dupe index reflecting the max substring length provided when configuring the `WordList`.
     pub dupe_index: BoxedDupeIndex,
 
-    /// The maximum word length provided when configuring the WordList, if any.
+    /// The maximum word length provided when configuring the `WordList`, if any.
     pub max_length: Option<usize>,
 
     /// Callback run after adding words.
@@ -627,7 +627,7 @@ impl WordList {
                     }
                     word.score = raw_entry.score;
                     word.hidden = false;
-                    word.canonical_string = raw_entry.canonical.clone();
+                    word.canonical_string.clone_from(&raw_entry.canonical);
                     word.source_index = Some(source_index);
                     word.personal_word_score =
                         if personal_list_index.map_or(false, |idx| idx == source_index) {
@@ -840,9 +840,7 @@ impl WordList {
             return None;
         }
 
-        let Some(source_index) = self.find_source_index_for_id(source_id) else {
-            return None;
-        };
+        let source_index = self.find_source_index_for_id(source_id)?;
         let source_config = &self.source_configs[source_index as usize];
         let is_personal_list = self
             .personal_list_index
@@ -906,9 +904,7 @@ impl WordList {
         normalized: &str,
         source_id: &str,
     ) -> Option<(String, u16)> {
-        let Some(source_index) = self.find_source_index_for_id(source_id) else {
-            return None;
-        };
+        let source_index = self.find_source_index_for_id(source_id)?;
         let source_config = &self.source_configs[source_index as usize];
         let is_personal_list = self
             .personal_list_index
@@ -977,7 +973,7 @@ impl WordList {
             };
             let entry = &other_source_state.entries[entry_index];
             word.score = entry.score;
-            word.canonical_string = entry.canonical.clone();
+            word.canonical_string.clone_from(&entry.canonical);
             word.hidden = false;
             word.source_index = Some(other_source_index as u16);
             return previous_entry;
@@ -1077,7 +1073,7 @@ impl WordList {
                     let mut line_parts: Vec<String> = line.split(';').map(str::to_string).collect();
                     let normalized = normalize_word(&line_parts[0]);
 
-                    if pending_updates.get(&normalized).is_none() {
+                    if !pending_updates.contains_key(&normalized) {
                         return Some(line.to_string());
                     }
 
@@ -1262,7 +1258,7 @@ pub mod tests {
         assert_eq!(word.score, 50);
         assert_eq!(word.hidden, false);
 
-        assert!(word_list.word_id_by_string.get("skates").is_none());
+        assert!(!word_list.word_id_by_string.contains_key("skates"));
     }
 
     #[test]

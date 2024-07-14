@@ -8,14 +8,13 @@ use float_ord::FloatOrd;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use smallvec::SmallVec;
-use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::arc_consistency::{
-    establish_arc_consistency, ArcConsistencyAdapter, ArcConsistencyFailure, ArcConsistencySuccess,
+    establish_arc_consistency, ArcConsistencyAdapter, ArcConsistencyFailure, EliminationSet,
 };
 use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
 use crate::types::WordId;
@@ -65,7 +64,7 @@ pub struct Slot {
     length: usize,
 
     /// Record of which options from `slot_options` have been eliminated from this slot, stored as
-    /// a Vec indexed by WordId:
+    /// a Vec indexed by `WordId`:
     /// * `Some(Some(id))` means "this option has been eliminated by the choice in slot `id`"
     /// * `Some(None)` means "this option has been eliminated regardless of any choices"
     /// * `None` means "this option has not been eliminated (or was never available)"
@@ -77,7 +76,7 @@ pub struct Slot {
     glyph_counts_by_cell: GlyphCountsByCell,
 
     /// How many options are still available for this slot? Note that this is based on the
-    /// `slot_options` from GridConfig, not the `words` from WordList, since the latter also
+    /// `slot_options` from `GridConfig`, not the `words` from `WordList`, since the latter also
     /// includes hidden words that aren't available for this fill attempt.
     remaining_option_count: usize,
 
@@ -274,6 +273,7 @@ fn maintain_arc_consistency(
     slot_weights: &[f32],
     mode: &ArcConsistencyMode,
     time: &mut Duration,
+    elimination_sets: &mut [EliminationSet],
 ) -> bool {
     struct Adapter<'a> {
         config: &'a GridConfig<'a>,
@@ -295,7 +295,7 @@ fn maintain_arc_consistency(
         fn get_single_option(
             &self,
             slot_id: SlotId,
-            eliminations: &HashSet<WordId>,
+            eliminations: &EliminationSet,
         ) -> Option<WordId> {
             self.slots[slot_id].fixed_word_id.or_else(|| {
                 #[cfg(feature = "check_invariants")]
@@ -304,7 +304,7 @@ fn maintain_arc_consistency(
                         .iter()
                         .filter(|&word_id| {
                             self.slots[slot_id].eliminations[*word_id].is_none()
-                                && !eliminations.contains(word_id)
+                                && !eliminations.contains(*word_id)
                         })
                         .copied()
                         .take(2)
@@ -324,7 +324,7 @@ fn maintain_arc_consistency(
                     .iter()
                     .find(|&word_id| {
                         self.slots[slot_id].eliminations[*word_id].is_none()
-                            && !eliminations.contains(word_id)
+                            && !eliminations.contains(*word_id)
                     })
                     .copied()
             })
@@ -400,11 +400,12 @@ fn maintain_arc_consistency(
         slot_weights,
         &fixed_slots,
         starting_slot_id,
+        elimination_sets,
     ) {
         // If we succeeded, we just need to apply the new eliminations to each slot and we're done.
-        Ok(ArcConsistencySuccess { eliminations }) => {
-            for (slot_id, eliminations) in eliminations.into_iter().enumerate() {
-                for word_id in eliminations {
+        Ok(()) => {
+            for (slot_id, eliminations) in elimination_sets.iter().enumerate() {
+                for &word_id in &eliminations.eliminated_ids {
                     slots[slot_id].add_elimination(config, word_id, blamed_slot_id);
                 }
             }
@@ -525,6 +526,7 @@ pub fn find_fill_for_seed(
     max_backtracks: usize,
     rng_seed: u64,
     crossing_weights: &mut [f32],
+    elimination_sets: &mut [EliminationSet],
 ) -> Result<FillSuccess, FillFailure> {
     let start = Instant::now();
     let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
@@ -638,6 +640,7 @@ pub fn find_fill_for_seed(
             &slot_weights,
             &ArcConsistencyMode::Choice(choice.clone()),
             &mut statistics.choice_arc_consistency_time,
+            elimination_sets,
         ) {
             // If we successfully propagated constraints for this choice, we can record it and
             // move on to the next slot.
@@ -662,6 +665,7 @@ pub fn find_fill_for_seed(
                     choices.last().map(|choice| choice.slot_id),
                 ),
                 &mut statistics.elimination_arc_consistency_time,
+                elimination_sets,
             ) {
                 // If we successfully propagated constraints for this elimination, we're done
                 // backtracking and can return to the top-level loop.
@@ -750,6 +754,12 @@ pub fn find_fill(
     // shared between retries so that we can learn from each one.
     let mut crossing_weights: Vec<f32> = (0..config.crossing_count).map(|_| 1.0).collect();
 
+    let mut eliminations: Vec<EliminationSet> = config
+        .slot_configs
+        .iter()
+        .map(|slot_config| EliminationSet::new(config.word_list.words[slot_config.length].len()))
+        .collect();
+
     // Establish initial arc consistency (including dupe-checking). If we can't even do that, we're
     // obviously not going to be able to find a fill.
     let slot_weights = calculate_slot_weights(config, &slots, &crossing_weights);
@@ -761,6 +771,7 @@ pub fn find_fill(
         &slot_weights,
         &ArcConsistencyMode::Initial,
         &mut initial_arc_consistency_time,
+        &mut eliminations,
     ) {
         return Err(FillFailure::HardFailure);
     }
@@ -779,6 +790,7 @@ pub fn find_fill(
             max_backtracks,
             retry_num,
             &mut crossing_weights,
+            &mut eliminations,
         ) {
             Ok(mut result) => {
                 result.statistics.retries = retry_num as usize;
