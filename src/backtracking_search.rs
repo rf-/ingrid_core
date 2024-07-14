@@ -754,11 +754,9 @@ pub fn find_fill(
     // shared between retries so that we can learn from each one.
     let mut crossing_weights: Vec<f32> = (0..config.crossing_count).map(|_| 1.0).collect();
 
-    let mut eliminations: Vec<EliminationSet> = config
-        .slot_configs
-        .iter()
-        .map(|slot_config| EliminationSet::new(config.word_list.words[slot_config.length].len()))
-        .collect();
+    // Build elimination sets that can be shared during all arc consistency calculations for the
+    // whole fill attempt.
+    let mut eliminations = EliminationSet::build_all(config.slot_configs, config.word_list);
 
     // Establish initial arc consistency (including dupe-checking). If we can't even do that, we're
     // obviously not going to be able to find a fill.

@@ -17,14 +17,15 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotId};
+use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
+use crate::word_list::WordList;
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// Structure for tracking words eliminated from a given slot while establishing arc consistency.
 pub struct EliminationSet {
-    /// Vec indexed by WordId, tracking whether the relevant word has been eliminated.
+    /// Vec indexed by `WordId`, tracking whether the relevant word has been eliminated.
     eliminations_by_id: Vec<bool>,
 
     /// Vec containing the ids of words that have been eliminated, in no particular order.
@@ -32,6 +33,15 @@ pub struct EliminationSet {
 }
 
 impl EliminationSet {
+    /// Build all of the needed sets for the given slot configs and word list.
+    #[must_use]
+    pub fn build_all(slot_configs: &[SlotConfig], word_list: &WordList) -> Vec<EliminationSet> {
+        slot_configs
+            .iter()
+            .map(|slot_config| EliminationSet::new(word_list.words[slot_config.length].len()))
+            .collect()
+    }
+
     /// Build a set for a slot with the given number of options. This is based on the total number
     /// of words of the relevant length in `WordList`, not the number of options the slot has at a
     /// given time, since `eliminations_by_id` needs to be indexable by any known `WordId`.
@@ -503,7 +513,8 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
 #[allow(dead_code)]
 pub fn establish_arc_consistency_for_static_grid(
     config: &GridConfig,
-) -> Result<Vec<EliminationSet>, ArcConsistencyFailure> {
+    elimination_sets: &mut [EliminationSet],
+) -> ArcConsistencyResult {
     struct Adapter<'a> {
         config: &'a GridConfig<'a>,
     }
@@ -562,12 +573,6 @@ pub fn establish_arc_consistency_for_static_grid(
         })
         .collect();
 
-    let mut eliminations: Vec<EliminationSet> = config
-        .slot_configs
-        .iter()
-        .map(|slot_config| EliminationSet::new(config.word_list.words[slot_config.length].len()))
-        .collect();
-
     let adapter = Adapter { config };
 
     establish_arc_consistency(
@@ -578,14 +583,13 @@ pub fn establish_arc_consistency_for_static_grid(
         &slot_weights,
         &fixed_slots,
         None,
-        &mut eliminations,
+        elimination_sets,
     )
-    .map(|()| eliminations)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::arc_consistency::establish_arc_consistency_for_static_grid;
+    use crate::arc_consistency::{establish_arc_consistency_for_static_grid, EliminationSet};
     use crate::grid_config::{generate_grid_config_from_template_string, OwnedGridConfig};
     use crate::word_list::tests::word_list_source_config;
     use crate::word_list::WordList;
@@ -636,9 +640,11 @@ mod tests {
 
         let start = Instant::now();
 
-        let eliminations_by_slot =
-            establish_arc_consistency_for_static_grid(&grid_config.to_config_ref())
-                .expect("Failed to establish consistency");
+        let config_ref = grid_config.to_config_ref();
+        let mut eliminations_by_slot =
+            EliminationSet::build_all(config_ref.slot_configs, config_ref.word_list);
+        establish_arc_consistency_for_static_grid(&config_ref, &mut eliminations_by_slot)
+            .expect("Failed to establish consistency");
 
         let checkpoint = start.elapsed();
         println!("Slot options eliminated in {:?}", start.elapsed());
