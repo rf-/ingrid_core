@@ -24,6 +24,7 @@ use crate::word_list::WordList;
 use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// Structure for tracking words eliminated from a given slot while establishing arc consistency.
+#[derive(Debug)]
 pub struct EliminationSet {
     /// Vec indexed by `WordId`, tracking whether the relevant word has been eliminated.
     eliminations_by_id: Vec<bool>,
