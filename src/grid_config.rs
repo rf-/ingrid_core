@@ -2,7 +2,6 @@
 //! specific fill algorithm.
 
 use regex::Regex;
-use smallvec::{smallvec, SmallVec};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +16,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::types::{GlyphId, WordId};
 use crate::util::build_glyph_counts_by_cell;
 use crate::word_list::WordList;
-use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// An identifier for the intersection between two slots; these correspond one-to-one with checked
 /// squares in the grid and are used to track weights (i.e., how often each square is involved in
@@ -56,7 +54,7 @@ pub struct SlotConfig {
     pub start_cell: GridCoord,
     pub direction: Direction,
     pub length: usize,
-    pub crossings: SmallVec<[Option<Crossing>; MAX_SLOT_LENGTH]>,
+    pub crossings: Vec<Option<Crossing>>,
     pub min_score_override: Option<u16>,
     pub filter_pattern: Option<Regex>,
 }
@@ -152,8 +150,8 @@ pub struct GridConfig<'a> {
 pub struct OwnedGridConfig {
     pub word_list: WordList,
     pub fill: Vec<Option<GlyphId>>,
-    pub slot_configs: SmallVec<[SlotConfig; MAX_SLOT_COUNT]>,
-    pub slot_options: SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]>,
+    pub slot_configs: Vec<SlotConfig>,
+    pub slot_options: Vec<Vec<WordId>>,
     pub width: usize,
     pub height: usize,
     pub crossing_count: usize,
@@ -185,7 +183,7 @@ impl OwnedGridConfig {
 pub fn sort_slot_options(
     word_list: &WordList,
     slot_configs: &[SlotConfig],
-    slot_options: &mut SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]>,
+    slot_options: &mut [Vec<WordId>],
 ) {
     // To calculate the fillability score for each word, we need statistics about which letters are
     // most likely to appear in each position for each slot.
@@ -330,16 +328,14 @@ impl<'de> Deserialize<'de> for SlotSpec {
 /// Given `GridEntry` structs specifying the positions of the slots in a grid, generate
 /// `SlotConfig`s containing derived information about crossings, etc.
 #[must_use]
-pub fn generate_slot_configs(
-    entries: &[SlotSpec],
-) -> (SmallVec<[SlotConfig; MAX_SLOT_COUNT]>, usize) {
+pub fn generate_slot_configs(entries: &[SlotSpec]) -> (Vec<SlotConfig>, usize) {
     #[derive(Debug)]
     struct GridCell {
         entries: Vec<(usize, usize)>, // (entry index, cell index within entry)
         number: Option<u32>,
     }
 
-    let mut slot_configs: SmallVec<[SlotConfig; MAX_SLOT_COUNT]> = smallvec![];
+    let mut slot_configs: Vec<SlotConfig> = vec![];
 
     // Build a map from cell location to entries involved, which we can then use to calculate
     // crossings.
@@ -378,7 +374,7 @@ pub fn generate_slot_configs(
 
     // Now we can build the actual slot configs.
     for (entry_idx, entry) in entries.iter().enumerate() {
-        let crossings: SmallVec<[Option<Crossing>; MAX_SLOT_LENGTH]> = entry
+        let crossings: Vec<Option<Crossing>> = entry
             .cell_coords()
             .iter()
             .map(|&loc| {
@@ -446,8 +442,7 @@ pub fn generate_slot_options(
 
     // If the slot is fully specified, we need to either use an existing word or create a new
     // (hidden) one.
-    let complete_fill: Option<SmallVec<[GlyphId; MAX_SLOT_COUNT]>> =
-        entry_fill.iter().copied().collect();
+    let complete_fill: Option<Vec<GlyphId>> = entry_fill.iter().copied().collect();
 
     if let Some(complete_fill) = complete_fill {
         let word_string: String = complete_fill
@@ -499,7 +494,7 @@ pub fn generate_all_slot_options(
     slot_configs: &[SlotConfig],
     grid_width: usize,
     global_min_score: u16,
-) -> SmallVec<[Vec<WordId>; MAX_SLOT_COUNT]> {
+) -> Vec<Vec<WordId>> {
     slot_configs
         .iter()
         .map(|slot| {

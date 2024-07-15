@@ -1,5 +1,5 @@
 use lazy_static::lazy_static;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Debug;
@@ -12,7 +12,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
 use crate::types::{GlobalWordId, GlyphId, WordId};
-use crate::{MAX_GLYPH_COUNT, MAX_SLOT_LENGTH};
+use crate::MAX_SLOT_LENGTH;
 
 lazy_static! {
     /// Completely arbitrary mapping from letter to point value.
@@ -392,7 +392,7 @@ pub type SyncErrors = HashMap<String, io::Error>;
 pub struct WordList {
     /// A list of all characters that occur in any (normalized) word. `GlyphId`s used everywhere
     /// else are indices into this list.
-    pub glyphs: SmallVec<[char; MAX_GLYPH_COUNT]>,
+    pub glyphs: Vec<char>,
 
     /// The inverse of `glyphs`: a map from a character to the `GlyphId` representing it.
     pub glyph_id_by_char: HashMap<char, GlyphId>,
@@ -440,7 +440,7 @@ impl WordList {
         max_shared_substring: Option<usize>,
     ) -> WordList {
         let mut instance = WordList {
-            glyphs: smallvec![],
+            glyphs: vec![],
             glyph_id_by_char: HashMap::new(),
             words: vec![vec![]],
             word_id_by_string: HashMap::new(),

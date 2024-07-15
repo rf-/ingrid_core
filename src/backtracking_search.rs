@@ -7,7 +7,6 @@
 use float_ord::FloatOrd;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
-use smallvec::SmallVec;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::Ordering;
@@ -19,7 +18,6 @@ use crate::arc_consistency::{
 use crate::grid_config::{Choice, Crossing, GridConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
-use crate::MAX_SLOT_COUNT;
 
 /// If the previously-attempted slot is within this distance of the "best" (lowest-priority-value)
 /// slot, we should stick with the previous one instead of switching (per Balafoutis).
@@ -521,7 +519,7 @@ pub enum FillFailure {
 #[allow(clippy::too_many_lines)]
 pub fn find_fill_for_seed(
     config: &GridConfig,
-    slots: &SmallVec<[Slot; MAX_SLOT_COUNT]>,
+    slots: &Vec<Slot>,
     deadline: Option<Instant>,
     max_backtracks: usize,
     rng_seed: u64,
@@ -532,7 +530,7 @@ pub fn find_fill_for_seed(
     let mut rng: SmallRng = SeedableRng::seed_from_u64(rng_seed);
     let mut statistics = Statistics::default();
 
-    let mut slots: SmallVec<[Slot; MAX_SLOT_COUNT]> = (*slots).clone();
+    let mut slots: Vec<Slot> = (*slots).clone();
 
     // Track slot choices made so far in the process.
     let mut choices: Vec<Choice> = Vec::with_capacity(config.slot_configs.len());
@@ -725,7 +723,7 @@ pub fn find_fill(
 
     // Create basic Slot structs for the grid, which we can copy for each retry instead of having
     // to regenerate from scratch.
-    let mut slots: SmallVec<[Slot; MAX_SLOT_COUNT]> = config
+    let mut slots: Vec<Slot> = config
         .slot_configs
         .iter()
         .map(|slot_config| {

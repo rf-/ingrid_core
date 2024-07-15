@@ -12,7 +12,6 @@
 //! We keep applying these rules until no more eliminations are possible.
 
 use float_ord::FloatOrd;
-use smallvec::{smallvec, SmallVec};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -21,7 +20,6 @@ use crate::grid_config::{Crossing, CrossingId, GridConfig, SlotConfig, SlotId};
 use crate::types::WordId;
 use crate::util::{build_glyph_counts_by_cell, GlyphCountsByCell};
 use crate::word_list::WordList;
-use crate::{MAX_SLOT_COUNT, MAX_SLOT_LENGTH};
 
 /// Structure for tracking words eliminated from a given slot while establishing arc consistency.
 #[derive(Debug)]
@@ -125,7 +123,7 @@ struct ArcConsistencySlotState<'a> {
 
     /// A map from each cell index to the number of eliminations its crossing has added to this slot
     /// so far. This is used to calculate new crossing weights if the propagation process fails.
-    blame_counts: SmallVec<[usize; MAX_SLOT_LENGTH]>,
+    blame_counts: Vec<usize>,
 
     /// The live count of words available, taking both global and local eliminations into account.
     option_count: usize,
@@ -136,7 +134,7 @@ struct ArcConsistencySlotState<'a> {
 
     /// A set of cell indices that we need to propagate *outward* from, removing any incompatible
     /// options from the crossing entry.
-    queued_cell_idxs: Option<SmallVec<[usize; MAX_SLOT_LENGTH]>>,
+    queued_cell_idxs: Option<Vec<usize>>,
 
     /// Do we need to do singleton propagation (e.g., uniqueness checks) from this slot? This can
     /// only be true if the slot has exactly one entry and we've never done this propagation from
@@ -195,7 +193,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
     // For each slot, a mutable reference to a structure for storing eliminations.
     elimination_sets: &mut [EliminationSet],
 ) -> ArcConsistencyResult {
-    let mut slot_states: SmallVec<[ArcConsistencySlotState; MAX_SLOT_COUNT]> = config
+    let mut slot_states: Vec<ArcConsistencySlotState> = config
         .slot_configs
         .iter()
         .zip(elimination_sets.iter_mut())
@@ -204,7 +202,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
             ArcConsistencySlotState {
                 slot_id: slot_config.id,
                 eliminations: elimination_set,
-                blame_counts: smallvec![0; slot_config.length],
+                blame_counts: vec![0; slot_config.length],
                 option_count: initial_option_counts[slot_config.id],
                 glyph_counts_by_cell: None,
                 queued_cell_idxs: None,
@@ -350,7 +348,7 @@ pub fn establish_arc_consistency<Adapter: ArcConsistencyAdapter>(
                 if crossing_glyph_count > 0 {
                     if slot_states[slot_id].queued_cell_idxs.is_none() {
                         slot_states[slot_id].queued_cell_idxs =
-                            Some(SmallVec::with_capacity(slot_config.length));
+                            Some(Vec::with_capacity(slot_config.length));
                     }
                     let queued_cell_idxs = slot_states[slot_id].queued_cell_idxs.as_mut().unwrap();
 

@@ -17,11 +17,5 @@ pub mod types;
 pub mod util;
 pub mod word_list;
 
-/// The expected maximum number of distinct characters/rebuses/whatever appearing in a grid.
-pub const MAX_GLYPH_COUNT: usize = 256;
-
-/// The expected maximum number of slots appearing in a grid.
-pub const MAX_SLOT_COUNT: usize = 256;
-
 /// The expected maximum length for a single slot.
 pub const MAX_SLOT_LENGTH: usize = 21;
