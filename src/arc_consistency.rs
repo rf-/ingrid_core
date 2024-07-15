@@ -32,12 +32,16 @@ pub struct EliminationSet {
 }
 
 impl EliminationSet {
-    /// Build all of the needed sets for the given slot configs and word list.
+    /// Build all of the needed sets for the given slot configs and word list. We also leave extra
+    /// space in each set to account for the possibility of literal words from the fill needing to
+    /// be added.
     #[must_use]
     pub fn build_all(slot_configs: &[SlotConfig], word_list: &WordList) -> Vec<EliminationSet> {
         slot_configs
             .iter()
-            .map(|slot_config| EliminationSet::new(word_list.words[slot_config.length].len()))
+            .map(|slot_config| {
+                EliminationSet::new(word_list.words[slot_config.length].len() + slot_configs.len())
+            })
             .collect()
     }
 
