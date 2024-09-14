@@ -1183,7 +1183,7 @@ impl WordList {
                 let old_mtime = self.source_states.get(&id).and_then(|state| state.mtime);
                 let new_mtime = source_config.modified();
 
-                if old_mtime.is_some() && new_mtime.is_some() && old_mtime != new_mtime {
+                if old_mtime != new_mtime {
                     Some(id)
                 } else {
                     None
