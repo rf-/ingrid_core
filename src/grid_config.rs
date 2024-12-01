@@ -1,7 +1,7 @@
 //! This module implements code for configuring a crossword-filling operation, independent of the
 //! specific fill algorithm.
 
-use regex::Regex;
+use fancy_regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
@@ -467,7 +467,10 @@ pub fn generate_slot_options(
                     }
 
                     if let Some(filter_pattern) = filter_pattern.as_ref() {
-                        if !filter_pattern.is_match(&word.normalized_string) {
+                        if !filter_pattern
+                            .is_match(&word.normalized_string)
+                            .unwrap_or(false)
+                        {
                             return false;
                         }
                     }
