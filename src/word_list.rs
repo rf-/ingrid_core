@@ -266,7 +266,7 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
     let mut file = File::open(path)?;
     let mut buf = vec![];
     file.read_to_end(&mut buf)?;
-    return Ok(String::from_utf8_lossy(&buf).into());
+    Ok(String::from_utf8_lossy(&buf).into())
 }
 
 pub struct RawWordListContents {
@@ -1183,10 +1183,10 @@ impl WordList {
                 let old_mtime = self.source_states.get(&id).and_then(|state| state.mtime);
                 let new_mtime = source_config.modified();
 
-                if old_mtime != new_mtime {
-                    Some(id)
-                } else {
+                if old_mtime == new_mtime {
                     None
+                } else {
+                    Some(id)
                 }
             })
             .collect()

@@ -146,7 +146,7 @@ struct ArcConsistencySlotState<'a> {
     needs_singleton_propagation: bool,
 }
 
-impl<'a> ArcConsistencySlotState<'a> {
+impl ArcConsistencySlotState<'_> {
     /// Get the current glyph counts for this slot, lazily fetching initial values from the adapter
     /// if needed.
     #[inline(always)]
@@ -522,7 +522,7 @@ pub fn establish_arc_consistency_for_static_grid(
         config: &'a GridConfig<'a>,
     }
 
-    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
+    impl ArcConsistencyAdapter for Adapter<'_> {
         fn is_word_eliminated(&self, _slot_id: SlotId, _word_id: WordId) -> bool {
             false
         }

@@ -278,7 +278,7 @@ fn maintain_arc_consistency(
         slots: &'a mut [Slot],
     }
 
-    impl<'a> ArcConsistencyAdapter for Adapter<'a> {
+    impl ArcConsistencyAdapter for Adapter<'_> {
         fn is_word_eliminated(&self, slot_id: SlotId, word_id: WordId) -> bool {
             self.slots[slot_id].eliminations[word_id].is_some()
         }
