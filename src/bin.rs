@@ -5,6 +5,7 @@ use ingrid_core::word_list::{WordList, WordListSourceConfig};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
+use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
@@ -27,6 +28,10 @@ struct Args {
     /// Maximum shared substring length between entries [default: none]
     #[arg(long)]
     max_shared_substring: Option<usize>,
+
+    /// Print timing information along with the grid
+    #[arg(short, long, default_value_t = false)]
+    time: bool,
 }
 
 struct Error(String);
@@ -77,6 +82,8 @@ fn main() -> Result<(), Error> {
         ));
     }
 
+    let start = Instant::now();
+
     let word_list = WordList::new(
         vec![match args.wordlist {
             Some(wordlist_path) => WordListSourceConfig::File {
@@ -94,6 +101,8 @@ fn main() -> Result<(), Error> {
         Some(max_side),
         args.max_shared_substring,
     );
+
+    let word_list_time = start.elapsed();
 
     #[allow(clippy::comparison_chain)]
     if let Some(errors) = word_list.get_source_errors().get("0") {
@@ -118,10 +127,16 @@ fn main() -> Result<(), Error> {
     let result = find_fill(&grid_config.to_config_ref(), None, None)
         .map_err(|_| Error("Unfillable grid".into()))?;
 
+    let fill_time = start.elapsed() - word_list_time;
+
     println!(
         "{}",
         render_grid(&grid_config.to_config_ref(), &result.choices).replace('.', "#")
     );
+
+    if args.time {
+        eprintln!("{word_list_time:?} loading word list, {fill_time:?} finding fill");
+    }
 
     Ok(())
 }
