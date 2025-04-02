@@ -12,13 +12,15 @@ smallvec = "1.8.0"
 instant = { version = "0.1.12", features = ["wasm-bindgen"] }
 lazy_static = "1.4.0"
 float-ord = "0.3.2"
-rand = { version = "0.8.5", features = ["std", "alloc", "getrandom", "std_rng", "small_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+rand = { version = "0.8.5", features = ["std", "alloc",  "std_rng", "small_rng"] }
 clap = { version = "4.0.15", features = ["derive"] }
 serde = { version = "1.0", optional = true }
 serde_derive = { version = "1.0", optional = true }
 unicode-normalization = "0.1.22"
 tempfile = "3"
 fancy-regex = "0.14.0"
+wasm-bindgen = "0.2.100"
 
 [dev-dependencies]
 ingrid_core = { path = ".", features = ["serde"] }
@@ -43,9 +45,10 @@ opt-level = 3
 [lib]
 name = "ingrid_core"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "ingrid_core"
+name = "ingrid_core_bin"
 path = "src/bin.rs"
 
 [features]

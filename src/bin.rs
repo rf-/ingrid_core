@@ -1,4 +1,5 @@
 use clap::Parser;
+
 use ingrid_core::backtracking_search::find_fill;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
 use ingrid_core::word_list::{WordList, WordListSourceConfig};
@@ -42,7 +43,9 @@ impl Debug for Error {
     }
 }
 
-fn main() -> Result<(), Error> {
+
+/// Function for command-line usage
+pub fn main() -> Result<(), Error> {
     let args = Args::parse();
 
     let raw_grid_content = fs::read_to_string(&args.grid_path)
@@ -140,3 +143,4 @@ fn main() -> Result<(), Error> {
 
     Ok(())
 }
+
