@@ -1,4 +1,4 @@
-import * as ingridCore from '/pkg/ingrid_core';
+import * as ingridCore from './pkg/ingrid_core.js';
 
 async function testGridFill() {
     try {
