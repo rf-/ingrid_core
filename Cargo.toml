@@ -9,7 +9,7 @@ readme = "README.md"
 
 [dependencies]
 smallvec = "1.8.0"
-instant = { version = "0.1.12", features = ["wasm-bindgen"] }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
 lazy_static = "1.4.0"
 float-ord = "0.3.2"
 getrandom = { version = "0.2", features = ["js"] }

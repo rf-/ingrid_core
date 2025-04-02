@@ -1,4 +1,4 @@
-use crate::backtracking_search::find_fill;
+// No longer need to import find_fill as we use find_fill_wasm
 use crate::grid_config::{generate_grid_config_from_template_string, render_grid, GridConfig};
 use crate::word_list::{WordList, WordListSourceConfig};
 use crate::backtracking_search::{Slot, FillSuccess, FillFailure, WEIGHT_AGE_FACTOR, ArcConsistencyMode};

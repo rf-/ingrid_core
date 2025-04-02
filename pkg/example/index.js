@@ -1,5 +1,5 @@
 // Import the WebAssembly module
-import init, { fill_grid } from './ingrid_core.js';
+import init, { fill_grid } from '../ingrid_core.js';
 
 // Initialize the WebAssembly module
 async function initializeWasm() {
