@@ -58,8 +58,8 @@ pub struct Statistics {
 #[derive(Clone)]
 pub struct Slot {
     /// Properties duplicated from `SlotConfig` for convenience.
-    id: SlotId,
-    length: usize,
+    pub id: SlotId,
+    pub length: usize,
 
     /// Record of which options from `slot_options` have been eliminated from this slot, stored as
     /// a Vec indexed by `WordId`:
@@ -67,23 +67,23 @@ pub struct Slot {
     /// * `Some(None)` means "this option has been eliminated regardless of any choices"
     /// * `None` means "this option has not been eliminated (or was never available)"
     #[allow(clippy::option_option)]
-    eliminations: Vec<Option<Option<SlotId>>>,
+    pub eliminations: Vec<Option<Option<SlotId>>>,
 
     /// To enable us to quickly validate crossing slots, we maintain a count of the number of
     /// instances of each glyph in each cell in our remaining options.
-    glyph_counts_by_cell: GlyphCountsByCell,
+    pub glyph_counts_by_cell: GlyphCountsByCell,
 
     /// How many options are still available for this slot? Note that this is based on the
     /// `slot_options` from `GridConfig`, not the `words` from `WordList`, since the latter also
     /// includes hidden words that aren't available for this fill attempt.
-    remaining_option_count: usize,
+    pub remaining_option_count: usize,
 
     // The word id explicitly chosen for this slot during the fill process (or as part of the input
     // to the fill process), if there is one. This takes precedence over `eliminations`,
     // `glyph_counts_by_cell`, and `remaining_option_count`, which will be kept in the state they
     // were in before the choice was made.
-    fixed_word_id: Option<WordId>,
-    fixed_glyph_counts_by_cell: Option<GlyphCountsByCell>,
+    pub fixed_word_id: Option<WordId>,
+    pub fixed_glyph_counts_by_cell: Option<GlyphCountsByCell>,
 }
 
 impl Debug for Slot {
@@ -106,7 +106,7 @@ impl Debug for Slot {
 impl Slot {
     /// Record that a word is unavailable for a slot, along with the slot id responsible so that we
     /// can roll it back if we backtrack the relevant decision.
-    fn add_elimination(
+    pub fn add_elimination(
         &mut self,
         config: &GridConfig,
         word_id: WordId,
@@ -128,7 +128,7 @@ impl Slot {
     }
 
     /// Record that a word is now available again for this slot.
-    fn remove_elimination(&mut self, config: &GridConfig, word_id: WordId) {
+    pub fn remove_elimination(&mut self, config: &GridConfig, word_id: WordId) {
         #[cfg(feature = "check_invariants")]
         assert!(
             self.fixed_word_id.is_none() && self.fixed_glyph_counts_by_cell.is_none(),
@@ -145,7 +145,7 @@ impl Slot {
     }
 
     /// Remove all eliminations that were created because of the last choice in the given slot.
-    fn clear_eliminations(&mut self, config: &GridConfig, slot_id: SlotId) {
+    pub fn clear_eliminations(&mut self, config: &GridConfig, slot_id: SlotId) {
         for word_id in 0..self.eliminations.len() {
             if self.eliminations[word_id] == Some(Some(slot_id)) {
                 self.remove_elimination(config, word_id);
@@ -154,7 +154,7 @@ impl Slot {
     }
 
     /// Record a choice, shadowing the existing eliminations, glyph counts, etc.
-    fn choose_word(&mut self, config: &GridConfig, word_id: WordId) {
+    pub fn choose_word(&mut self, config: &GridConfig, word_id: WordId) {
         self.fixed_word_id = Some(word_id);
         self.fixed_glyph_counts_by_cell = Some(build_glyph_counts_by_cell(
             config.word_list,
@@ -165,13 +165,13 @@ impl Slot {
 
     /// Clear a choice. Since we only ever backtrack linearly, the previously-stored eliminations,
     /// glyph counts, etc., should still be correct.
-    fn clear_choice(&mut self) {
+    pub fn clear_choice(&mut self) {
         self.fixed_word_id = None;
         self.fixed_glyph_counts_by_cell = None;
     }
 
     /// Build a Choice struct representing this slot's single remaining word.
-    fn get_choice(&self, config: &GridConfig) -> Option<Choice> {
+    pub fn get_choice(&self, config: &GridConfig) -> Option<Choice> {
         self.fixed_word_id
             .map(|word_id| Choice {
                 slot_id: self.id,
@@ -235,7 +235,7 @@ fn calculate_slot_weight(
 }
 
 /// Calculate the weights of all slots as defined in the `wdeg` heuristic.
-fn calculate_slot_weights(
+pub fn calculate_slot_weights(
     config: &GridConfig,
     slots: &[Slot],
     crossing_weights: &[f32],
@@ -254,7 +254,7 @@ fn calculate_slot_priority(slots: &[Slot], slot_weights: &[f32], slot_id: SlotId
 }
 
 #[derive(Debug)]
-enum ArcConsistencyMode {
+pub enum ArcConsistencyMode {
     Initial,
     Choice(Choice),
     Elimination(Choice, Option<SlotId>),
@@ -444,7 +444,7 @@ fn maintain_arc_consistency(
 /// Identify the next slot we should try to fill, based on a combination of the `dom/wdeg` priority
 /// algorithm with an "adaptive branching" strategy that stays on the same slot if the "best" one
 /// is close enough in priority.
-fn choose_next_slot(
+pub fn choose_next_slot(
     slots: &[Slot],
     slot_weights: &[f32],
     last_slot_id: Option<SlotId>,

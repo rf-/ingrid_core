@@ -1,6 +1,8 @@
 use crate::backtracking_search::find_fill;
-use crate::grid_config::{generate_grid_config_from_template_string, render_grid};
+use crate::grid_config::{generate_grid_config_from_template_string, render_grid, GridConfig};
 use crate::word_list::{WordList, WordListSourceConfig};
+use crate::backtracking_search::{Slot, FillSuccess, FillFailure, WEIGHT_AGE_FACTOR, ArcConsistencyMode};
+use crate::arc_consistency::EliminationSet;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 use wasm_bindgen::prelude::*;
@@ -56,9 +58,9 @@ pub fn fill_grid(
             enabled: true,
             contents: STWL_RAW.into(),
         }],
-        max_shared_substring,
-        Some(width.max(height)),
-        Some(min_score),
+        max_shared_substring.map(|mss| mss as u16),
+        Some(min_score.into()),
+        Some(min_score.into()),
     );
 
     // Check for word list errors
@@ -80,8 +82,7 @@ pub fn fill_grid(
     }
 
     let grid_config =
-        generate_grid_config_from_template_string(word_list, &raw_grid_content, min_score);
-
+        generate_grid_config_from_template_string(word_list, &raw_grid_content, min_score.into());
     let result = find_fill_wasm(&grid_config.to_config_ref())
         .map_err(|_| JsError::new("Unfillable grid"))?;
 
