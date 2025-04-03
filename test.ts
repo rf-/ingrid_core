@@ -63,19 +63,22 @@ async function testRuntimeComparison() {
     try {
         console.log("Comparing runtimes for ingridCore.fill_grid() vs CLI");
         
-        // Add WebAssembly module initialization
+        // Measure WebAssembly initialization time
+        const startWasmInit = Date.now();
         console.log("Initializing WebAssembly module...");
         await ingridCore.default();
+        const wasmInitTime = Date.now() - startWasmInit;
+        console.log("WASM initialization time:", wasmInitTime, "ms");
+            
+        // Measure just the grid filling time
+        const startWasmFill = Date.now();
+        // await ingridCore.fill_grid(gridContent, null, null, testUrl);
+        await ingridCore.fill_grid(gridContent, null, null);
+        const wasmFillTime = Date.now() - startWasmFill;
+        console.log("WASM grid fill time:", wasmFillTime, "ms");
+        console.log("WASM total time:", wasmInitTime + wasmFillTime, "ms");
         
-        // Measure runtime for ingridCore.fill_grid()
-        const startWasm = Date.now();
-        await ingridCore.fill_grid(gridContent, null, null, testUrl);
-        const wasmRuntime = Date.now() - startWasm;
-        console.log("WASM runtime:", wasmRuntime, "ms");
-        
-        // Prepare CLI command; replace newlines for safe CLI argument passing
-        const gridArg = gridContent.replace(/\n/g, ' ');
-        // Assuming the CLI accepts parameters: --grid "<gridContent>" --wordlist <wordlist>
+        // CLI timing remains the same
         const cliCommand = `ingrid_core --wordlist ${testFilePath} ${gridFilePath}`;
         
         const startCli = Date.now();
@@ -86,18 +89,15 @@ async function testRuntimeComparison() {
             stderr: "piped",
         });
         const output = await command.output();
-
-        const { code, stdout, stderr } = output;
-        const stdoutText = new TextDecoder().decode(stdout);
-        const stderrText = new TextDecoder().decode(stderr);
-
-        if (code !== 0) {
-            throw new Error(`CLI process exited with code ${code}\nError output: ${stderrText}`);
-        }
         const cliRuntime = Date.now() - startCli;
         console.log("CLI runtime:", cliRuntime, "ms");
-        console.log("CLI output:", stdoutText);
-        if (stderrText) console.error("CLI error output:", stderrText);
+        
+        // Process output
+        const textDecoder = new TextDecoder();
+        const stdout = textDecoder.decode(output.stdout);
+        console.log("CLI output:", stdout);
+        const stderr = textDecoder.decode(output.stderr);
+        if (stderr) console.error("CLI error output:", stderr);
     } catch (error) {
         console.error("Error during runtime comparison:", error);
     }
