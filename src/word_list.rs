@@ -115,7 +115,7 @@ pub enum WordListSourceConfig {
     FileContents {
         id: String,
         enabled: bool,
-        contents: &'static str,
+        contents: String,
     },
 }
 

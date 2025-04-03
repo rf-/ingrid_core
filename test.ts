@@ -1,5 +1,9 @@
 import * as ingridCore from "./pkg/ingrid_core.js";
 // Removed unused import as Deno.readTextFile is used instead
+// Load the word list from disk
+const wordList = await Deno.readTextFile('./resources/spreadthewordlist.dict');
+console.log("Word list loaded successfully from disk:", wordList.slice(0, 100));
+
 
 async function testGridFill() {
     try {
@@ -45,10 +49,6 @@ async function testGridFillWithWordList() {
             ".....";
         
         console.log("Grid content:", gridContent);
-        
-        // Load the word list from disk
-        const wordList = await Deno.readTextFile('./resources/spreadthewordlist.dict');
-        console.log("Word list loaded successfully from disk:", wordList.slice(0, 100));
         
         // Call fill_grid with the loaded word list as final argument
         const result = await ingridCore.fill_grid(gridContent, null, null, wordList);

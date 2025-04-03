@@ -10,11 +10,38 @@ use wasm_bindgen::prelude::*;
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
 /// WASM-compatible function to fill a crossword grid
 #[wasm_bindgen]
-pub fn fill_grid(
+pub async fn fill_grid(
     grid_content: &str,
     min_score: Option<u16>,
     max_shared_substring: Option<usize>,
+    word_list_source: Option<String>
 ) -> Result<String, JsError> {
+    // Load the word list content from a URL or a file path, or use the built-in word list
+    let word_list_content = match word_list_source {
+        Some(src) => {
+            if src.starts_with("http://") || src.starts_with("https://") {
+                use wasm_bindgen::JsCast;
+                let window = web_sys::window().unwrap_throw();
+                let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&src))
+                    .await
+                    .unwrap_throw();
+                let response: web_sys::Response = resp_value.dyn_into().unwrap_throw();
+                if !response.ok() {
+                    wasm_bindgen::throw_str("Network response was not OK");
+                }
+                let text = wasm_bindgen_futures::JsFuture::from(response.text().unwrap_throw())
+                    .await
+                    .unwrap_throw();
+                text.as_string().unwrap_throw()
+            } else {
+                std::fs::read_to_string(&src)
+                    .map_err(|e| wasm_bindgen::throw_str(&format!("Failed to read file: {}", e)))
+                    .unwrap_throw()
+            }
+        }
+        None => STWL_RAW.to_string()
+    };
+
     // Normalize grid content
     let raw_grid_content = grid_content
         .trim()
@@ -38,7 +65,7 @@ pub fn fill_grid(
         return Err(JsError::new("Rows in grid must all be the same length"));
     }
 
-    let width = raw_grid_content.lines().next().unwrap().chars().count() - 1;
+    let width = raw_grid_content.lines().next().unwrap().chars().count();
 
     // Validate max_shared_substring
     if !max_shared_substring
@@ -51,12 +78,12 @@ pub fn fill_grid(
 
     let min_score = min_score.unwrap_or(50);
 
-    // Use the embedded word list
-    let word_list = WordList::new(
-        vec![WordListSourceConfig::FileContents {
+    // Create the word list using the dynamically loaded content
+    let word_list = crate::word_list::WordList::new(
+        vec![crate::word_list::WordListSourceConfig::FileContents {
             id: "0".into(),
             enabled: true,
-            contents: STWL_RAW.into(),
+            contents: word_list_content,
         }],
         max_shared_substring.map(|mss| mss as u16),
         Some(min_score.into()),
@@ -158,8 +185,9 @@ fn find_fill_wasm(config: &GridConfig) -> Result<crate::backtracking_search::Fil
     // Initial max_backtracks value
     let mut max_backtracks: usize = 500;
 
-    // Try to fill the grid
-    for retry_num in 0.. {
+    // Try to fill the grid with a maximum number of retries
+    const MAX_RETRIES: u64 = 100000;
+    for retry_num in 0..MAX_RETRIES {
         match find_fill_for_seed_wasm(
             config,
             &slots,
@@ -183,7 +211,8 @@ fn find_fill_wasm(config: &GridConfig) -> Result<crate::backtracking_search::Fil
         }
     }
 
-    unreachable!();
+    // If we've exhausted all retries, return a hard failure
+    Err(FillFailure::HardFailure)
 }
 
 // WASM-compatible version of maintain_arc_consistency that doesn't use Instant
@@ -413,11 +442,14 @@ fn find_fill_for_seed_wasm(
             .take(RANDOM_WORD_WEIGHTS.len())
             .collect();
 
-        assert!(
-            !word_candidates.is_empty(),
-            "Unable to find option for slot {:?}",
-            slots[slot_id]
-        );
+        if word_candidates.is_empty() {
+            use web_sys::console;
+            console::log_1(&JsValue::from_str(&format!(
+                "No valid candidates found for slot {:?}",
+                slots[slot_id]
+            )));
+            return Err(FillFailure::HardFailure);
+        }
 
         // Choose one candidate at random
         let (_, &word_id) =

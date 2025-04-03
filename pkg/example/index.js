@@ -1,16 +1,6 @@
 // Import the WebAssembly module
 import init, { fill_grid } from '../ingrid_core.js';
 
-// Fetch the word list
-const SPREADTHEWORDLIST = await fetch('http://localhost:8080/spreadthewordlist.dict')
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('Failed to load word list from URL');
-        }
-        return response.text();
-    });
-
-console.log('Word list loaded successfully:', SPREADTHEWORDLIST.slice(0, 100)); // Log the first 100 characters for debugging
 // Initialize the WebAssembly module
 async function initializeWasm() {
     try {
@@ -50,7 +40,7 @@ async function handleSubmit(event) {
     document.getElementById('loading').style.display = 'block';
     
     try {
-        const result = await fill_grid(gridTemplate, minScore, maxSharedSubstring, SPREADTHEWORDLIST);
+        const result = await fill_grid(gridTemplate, minScore, maxSharedSubstring, 'http://localhost:8080/spreadthewordlist.dict');
         displayResult(result);
     } catch (error) {
         console.error('Error filling grid:', error);

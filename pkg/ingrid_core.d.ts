@@ -3,18 +3,21 @@
 /**
  * WASM-compatible function to fill a crossword grid
  */
-export function fill_grid(grid_content: string, min_score?: number | null, max_shared_substring?: number | null): string;
+export function fill_grid(grid_content: string, min_score?: number | null, max_shared_substring?: number | null, word_list_source?: string | null): Promise<string>;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly fill_grid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-  readonly __wbindgen_export_0: WebAssembly.Table;
+  readonly fill_grid: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+  readonly __wbindgen_exn_store: (a: number) => void;
+  readonly __externref_table_alloc: () => number;
+  readonly __wbindgen_export_2: WebAssembly.Table;
+  readonly __wbindgen_export_3: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-  readonly __externref_table_dealloc: (a: number) => void;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly closure78_externref_shim: (a: number, b: number, c: any) => void;
+  readonly closure238_externref_shim: (a: number, b: number, c: any, d: any) => void;
   readonly __wbindgen_start: () => void;
 }
 
