@@ -132,8 +132,8 @@ pub async fn fill_grid(
     max_shared_substring: Option<usize>,
     word_list_source: Option<String>
 ) -> Result<String, JsError> {
-    console::time_with_label("fill_grid_total");
-    console::time_with_label("string_batching");
+    // console::time_with_label("fill_grid_total");
+    // console::time_with_label("string_batching");
     
     // Create a batched strings container to hold all strings with a single allocation
     let mut batched_strings = BatchedStrings::with_capacity(
@@ -142,11 +142,11 @@ pub async fn fill_grid(
     
     // Add grid content to the batch for normalization later
     let grid_content_idx = batched_strings.add(grid_content);
-    console::time_end_with_label("string_batching");
-    console::log_1(&JsValue::from_str("⏱️ Time spent creating string batch"));
+    // console::time_end_with_label("string_batching");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent creating string batch"));
     
     // Load the word list content from a URL or a file path, or use the built-in word list
-    console::time_with_label("word_list_loading");
+    // console::time_with_label("word_list_loading");
     let word_list_content = match word_list_source {
         Some(src) => {
             if src.starts_with("http://") || src.starts_with("https://") {
@@ -176,15 +176,15 @@ pub async fn fill_grid(
     };
     
     // Add the word list to our batched strings
-    console::time_with_label("word_list_batching");
+    // console::time_with_label("word_list_batching");
     let word_list_idx = batched_strings.add(&word_list_content);
-    console::time_end_with_label("word_list_batching");
-    console::log_1(&JsValue::from_str("⏱️ Time spent batching word list"));
-    console::time_end_with_label("word_list_loading");
-    console::log_1(&JsValue::from_str("⏱️ Time spent loading word list"));
+    // console::time_end_with_label("word_list_batching");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent batching word list"));
+    // console::time_end_with_label("word_list_loading");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent loading word list"));
 
     // Get a pre-allocated buffer for string normalization from the pool
-    console::time_with_label("grid_content_normalization");
+    // console::time_with_label("grid_content_normalization");
     let grid_content_for_normalization = batched_strings.get(grid_content_idx);
     let buffer_needed = grid_content_for_normalization.len() * 2; // Unicode normalization may expand
     
@@ -206,8 +206,8 @@ pub async fn fill_grid(
         .collect::<String>()
         .to_lowercase();
     
-    console::time_end_with_label("grid_content_normalization");
-    console::log_1(&JsValue::from_str("⏱️ Time spent normalizing grid content"));
+    // console::time_end_with_label("grid_content_normalization");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent normalizing grid content"));
 
     let height = raw_grid_content.lines().count();
 
@@ -239,11 +239,11 @@ pub async fn fill_grid(
     let min_score = min_score.unwrap_or(50);
 
     // Create the word list using the dynamically loaded content
-    console::time_with_label("word_list_processing");
+    // console::time_with_label("word_list_processing");
     let word_list_content_ref = batched_strings.get(word_list_idx);
     
     // Track time spent creating WordList
-    console::time_with_label("word_list_creation");
+    // console::time_with_label("word_list_creation");
     
     // Create WordList from the content
     let word_list = WordList::new(
@@ -257,8 +257,8 @@ pub async fn fill_grid(
         max_shared_substring,
     );
     
-    console::time_end_with_label("word_list_creation");
-    console::log_1(&JsValue::from_str("⏱️ Time spent creating WordList"));
+    // console::time_end_with_label("word_list_creation");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent creating WordList"));
     
     #[allow(clippy::comparison_chain)]
     if let Some(errors) = word_list.get_source_errors().get("0") {
@@ -289,11 +289,11 @@ pub async fn fill_grid(
         return Err(JsError::new("Word list is empty"));
     }
 
-    console::time_with_label("template_string_processing");
+    // console::time_with_label("template_string_processing");
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, min_score.into());
-    console::time_end_with_label("template_string_processing");
-    console::log_1(&JsValue::from_str("⏱️ Time spent processing template string"));
+    // console::time_end_with_label("template_string_processing");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent processing template string"));
     let result = find_fill_wasm(&grid_config.to_config_ref())
         .map_err(|_| {
             // Return buffer to the pool before returning error
@@ -304,24 +304,24 @@ pub async fn fill_grid(
         })?;
 
     // Return the filled grid as a string
-    console::time_with_label("grid_rendering");
+    // console::time_with_label("grid_rendering");
     let rendered_grid = render_grid(&grid_config.to_config_ref(), &result.choices).replace('.', "#");
-    console::time_end_with_label("grid_rendering");
-    console::log_1(&JsValue::from_str("⏱️ Time spent rendering final grid"));
+    // console::time_end_with_label("grid_rendering");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent rendering final grid"));
     
-    console::time_end_with_label("fill_grid_total");
-    console::log_1(&JsValue::from_str("⏱️ Total time spent in WASM boundary crossing"));
+    // console::time_end_with_label("fill_grid_total");
+    // console::log_1(&JsValue::from_str("⏱️ Total time spent in WASM boundary crossing"));
     
     // Clean up buffer pool before returning
-    console::time_with_label("buffer_pool_cleanup");
+    // console::time_with_label("buffer_pool_cleanup");
     // Return the normalized buffer to the pool
     if let Ok(mut pool) = BUFFER_POOL.lock() {
         pool.return_buffer(normalized_buffer);
     } else {
         console::warn_1(&JsValue::from_str("Failed to return buffer to pool - mutex poisoned"));
     }
-    console::time_end_with_label("buffer_pool_cleanup");
-    console::log_1(&JsValue::from_str("⏱️ Time spent cleaning up buffer pool"));
+    // console::time_end_with_label("buffer_pool_cleanup");
+    // console::log_1(&JsValue::from_str("⏱️ Time spent cleaning up buffer pool"));
     
     Ok(rendered_grid)
 }
