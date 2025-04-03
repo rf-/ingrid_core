@@ -22,13 +22,6 @@ struct BatchedStrings {
 }
 
 impl BatchedStrings {
-    /// Create a new empty batch
-    fn new() -> Self {
-        Self {
-            buffer: String::new(),
-            spans: Vec::new(),
-        }
-    }
 
     /// Create a new batch with an initial capacity
     fn with_capacity(capacity: usize) -> Self {
@@ -51,11 +44,6 @@ impl BatchedStrings {
     fn get(&self, index: usize) -> &str {
         let (start, end) = self.spans[index];
         &self.buffer[start..end]
-    }
-
-    /// Get the number of strings in the batch
-    fn len(&self) -> usize {
-        self.spans.len()
     }
 }
 
