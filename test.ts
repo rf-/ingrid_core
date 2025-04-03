@@ -1,13 +1,12 @@
 import * as ingridCore from "./pkg/ingrid_core.js";
-import { promisify } from 'node:util';
 
 // Removed unused import as Deno.readTextFile is used instead
 // Load the word list from disk
 // const wordList = await Deno.readTextFile('./resources/spreadthewordlist.dict');
 // console.log("Word list loaded successfully from disk:", wordList.slice(0, 100));
 
-const testUrl = 'http://localhost:8080/spreadthewordlist.dict';
-const testFilePath = './resources/spreadthewordlist.dict';
+const testUrl = 'http://localhost:8000/resources/XwiWordList.txt';
+const testFilePath = './resources/XwiWordList.txt';
 const gridFilePath = './resources/emptyGrid.txt';
 
 const gridContent = 

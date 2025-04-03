@@ -10,7 +10,7 @@ use web_sys::console;
 use std::sync::Mutex;
 use std::sync::LazyLock;
 
-const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
+const STWL_RAW: &str = include_str!("../resources/XwiWordList.txt");
 
 /// A struct to batch multiple strings into a single allocation
 /// to reduce JS-WASM boundary crossings

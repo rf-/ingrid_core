@@ -9,7 +9,7 @@ const TEST_GRID = `....
 ....
 ....`;  // Our test grid
 // URL to fetch the word list
-const wordListURL = 'http://localhost:8000/resources/spreadthewordlist.dict';
+const wordListURL = 'http://localhost:8000/resources/XwiWordList.txt';
 
 
 export async function runBenchmark() {
@@ -46,7 +46,8 @@ export async function runBenchmark() {
 async function runIteration(results) {
   if (!results) {
     // Just run without collecting results for warm-up
-    fill_grid(TEST_GRID, null, null, wordListURL);
+    // fill_grid(TEST_GRID, null, null, wordListURL);
+    fill_grid(TEST_GRID);
     return;
   }
 
@@ -62,7 +63,8 @@ async function runIteration(results) {
   // This is a simulated split since we don't have direct access to internal timings
   // Real implementation would use the web_sys::console performance markers from Rust
   const gridInitStart = performance.now();
-  const solutionPromise = fill_grid(gridStr, null, null, wordListURL);
+  // const solutionPromise = fill_grid(gridStr, null, null, wordListURL);
+  const solutionPromise = fill_grid(gridStr);
   const gridInitEnd = performance.now();
   
   // Wait for the solution (solving phase)

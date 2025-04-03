@@ -9,7 +9,7 @@ use std::fs;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
-const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
+const STWL_RAW: &str = include_str!("../resources/XwiWordList.txt");
 
 /// ingrid_core: Command-line crossword generation tool
 #[derive(Parser, Debug)]

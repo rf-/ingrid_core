@@ -1227,7 +1227,7 @@ pub mod tests {
         path.pop();
         path.pop();
         path.push("resources");
-        path.push("spreadthewordlist.dict");
+        path.push("XwiWordList.txt");
         path
     }
 
