@@ -40,7 +40,7 @@ async function handleSubmit(event) {
     document.getElementById('loading').style.display = 'block';
     
     try {
-        const result = fill_grid(gridTemplate, minScore, maxSharedSubstring);
+        const result = await fill_grid(gridTemplate, minScore, maxSharedSubstring);
         displayResult(result);
     } catch (error) {
         console.error('Error filling grid:', error);
