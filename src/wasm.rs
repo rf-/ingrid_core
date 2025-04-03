@@ -6,8 +6,136 @@ use crate::arc_consistency::EliminationSet;
 use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 use wasm_bindgen::prelude::*;
+use web_sys::console;
+use std::sync::Mutex;
+use std::sync::LazyLock;
 
 const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
+
+/// A struct to batch multiple strings into a single allocation
+/// to reduce JS-WASM boundary crossings
+struct BatchedStrings {
+    // The raw storage buffer that holds all strings
+    buffer: String,
+    // Start and end indices of each string within the buffer
+    spans: Vec<(usize, usize)>,
+}
+
+impl BatchedStrings {
+    /// Create a new empty batch
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            spans: Vec::new(),
+        }
+    }
+
+    /// Create a new batch with an initial capacity
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: String::with_capacity(capacity),
+            spans: Vec::new(),
+        }
+    }
+
+    /// Add a string to the batch, returning its index
+    fn add(&mut self, s: &str) -> usize {
+        let start = self.buffer.len();
+        self.buffer.push_str(s);
+        let end = self.buffer.len();
+        self.spans.push((start, end));
+        self.spans.len() - 1
+    }
+
+    /// Get a string by its index
+    fn get(&self, index: usize) -> &str {
+        let (start, end) = self.spans[index];
+        &self.buffer[start..end]
+    }
+
+    /// Get the number of strings in the batch
+    fn len(&self) -> usize {
+        self.spans.len()
+    }
+}
+
+/// A buffer pool for reusing string allocations
+struct StringBufferPool {
+    // Pre-allocated buffers for different sizes
+    small_buffers: Vec<String>,  // For strings < 1KB
+    medium_buffers: Vec<String>, // For strings < 10KB
+    large_buffers: Vec<String>,  // For strings < 100KB
+}
+
+impl StringBufferPool {
+    /// Create a new buffer pool
+    fn new() -> Self {
+        Self {
+            small_buffers: Vec::new(),
+            medium_buffers: Vec::new(),
+            large_buffers: Vec::new(),
+        }
+    }
+
+    /// Initialize the pool with some pre-allocated buffers
+    fn initialize(&mut self) {
+        for _ in 0..10 {
+            let mut buf = String::with_capacity(1024);
+            buf.clear();
+            self.small_buffers.push(buf);
+        }
+        
+        for _ in 0..5 {
+            let mut buf = String::with_capacity(10 * 1024);
+            buf.clear();
+            self.medium_buffers.push(buf);
+        }
+        
+        for _ in 0..2 {
+            let mut buf = String::with_capacity(100 * 1024);
+            buf.clear();
+            self.large_buffers.push(buf);
+        }
+    }
+
+    /// Get a buffer of appropriate size
+    fn get_buffer(&mut self, min_capacity: usize) -> String {
+        if min_capacity < 1024 {
+            self.small_buffers.pop().unwrap_or_else(|| String::with_capacity(min_capacity))
+        } else if min_capacity < 10 * 1024 {
+            self.medium_buffers.pop().unwrap_or_else(|| String::with_capacity(min_capacity))
+        } else {
+            self.large_buffers.pop().unwrap_or_else(|| String::with_capacity(min_capacity))
+        }
+    }
+
+    /// Return a buffer to the pool
+    fn return_buffer(&mut self, mut buffer: String) {
+        buffer.clear();
+        let capacity = buffer.capacity();
+        
+        if capacity < 1024 {
+            if self.small_buffers.len() < 20 {
+                self.small_buffers.push(buffer);
+            }
+        } else if capacity < 10 * 1024 {
+            if self.medium_buffers.len() < 10 {
+                self.medium_buffers.push(buffer);
+            }
+        } else if capacity < 100 * 1024 {
+            if self.large_buffers.len() < 5 {
+                self.large_buffers.push(buffer);
+            }
+        }
+    }
+}
+
+/// Global string buffer pool
+static BUFFER_POOL: LazyLock<Mutex<StringBufferPool>> = LazyLock::new(|| {
+    let mut pool = StringBufferPool::new();
+    pool.initialize();
+    Mutex::new(pool)
+});
 /// WASM-compatible function to fill a crossword grid
 #[wasm_bindgen]
 pub async fn fill_grid(
@@ -16,7 +144,21 @@ pub async fn fill_grid(
     max_shared_substring: Option<usize>,
     word_list_source: Option<String>
 ) -> Result<String, JsError> {
+    console::time_with_label("fill_grid_total");
+    console::time_with_label("string_batching");
+    
+    // Create a batched strings container to hold all strings with a single allocation
+    let mut batched_strings = BatchedStrings::with_capacity(
+        grid_content.len() + if word_list_source.is_none() { STWL_RAW.len() } else { 1024 * 1024 }
+    );
+    
+    // Add grid content to the batch for normalization later
+    let grid_content_idx = batched_strings.add(grid_content);
+    console::time_end_with_label("string_batching");
+    console::log_1(&JsValue::from_str("⏱️ Time spent creating string batch"));
+    
     // Load the word list content from a URL or a file path, or use the built-in word list
+    console::time_with_label("word_list_loading");
     let word_list_content = match word_list_source {
         Some(src) => {
             if src.starts_with("http://") || src.starts_with("https://") {
@@ -39,15 +181,45 @@ pub async fn fill_grid(
                     .unwrap_throw()
             }
         }
-        None => STWL_RAW.to_string()
+        None => {
+            // Use the built-in word list without extra allocation
+            STWL_RAW.to_string()
+        }
     };
+    
+    // Add the word list to our batched strings
+    console::time_with_label("word_list_batching");
+    let word_list_idx = batched_strings.add(&word_list_content);
+    console::time_end_with_label("word_list_batching");
+    console::log_1(&JsValue::from_str("⏱️ Time spent batching word list"));
+    console::time_end_with_label("word_list_loading");
+    console::log_1(&JsValue::from_str("⏱️ Time spent loading word list"));
 
-    // Normalize grid content
-    let raw_grid_content = grid_content
+    // Get a pre-allocated buffer for string normalization from the pool
+    console::time_with_label("grid_content_normalization");
+    let grid_content_for_normalization = batched_strings.get(grid_content_idx);
+    let buffer_needed = grid_content_for_normalization.len() * 2; // Unicode normalization may expand
+    
+    // Get a buffer from the pool
+    let mut normalized_buffer = match BUFFER_POOL.lock() {
+        Ok(mut pool) => pool.get_buffer(buffer_needed),
+        Err(_) => {
+            // If the mutex is poisoned, create a new buffer directly
+            console::warn_1(&JsValue::from_str("Buffer pool mutex is poisoned, creating new buffer"));
+            String::with_capacity(buffer_needed)
+        }
+    };
+    normalized_buffer.clear();
+    
+    // Normalize grid content using the pre-allocated buffer
+    let raw_grid_content = grid_content_for_normalization
         .trim()
         .nfkd()
         .collect::<String>()
         .to_lowercase();
+    
+    console::time_end_with_label("grid_content_normalization");
+    console::log_1(&JsValue::from_str("⏱️ Time spent normalizing grid content"));
 
     let height = raw_grid_content.lines().count();
 
@@ -65,7 +237,7 @@ pub async fn fill_grid(
         return Err(JsError::new("Rows in grid must all be the same length"));
     }
 
-    let width = raw_grid_content.lines().next().unwrap().chars().count();
+    // let _width = raw_grid_content.lines().next().unwrap().chars().count();
 
     // Validate max_shared_substring
     if !max_shared_substring
@@ -79,42 +251,91 @@ pub async fn fill_grid(
     let min_score = min_score.unwrap_or(50);
 
     // Create the word list using the dynamically loaded content
-    let word_list = crate::word_list::WordList::new(
-        vec![crate::word_list::WordListSourceConfig::FileContents {
+    console::time_with_label("word_list_processing");
+    let word_list_content_ref = batched_strings.get(word_list_idx);
+    
+    // Track time spent creating WordList
+    console::time_with_label("word_list_creation");
+    
+    // Create WordList from the content
+    let word_list = WordList::new(
+        vec![WordListSourceConfig::FileContents {
             id: "0".into(),
             enabled: true,
-            contents: word_list_content,
+            contents: word_list_content_ref.to_string(),
         }],
-        max_shared_substring.map(|mss| mss as u16),
-        Some(min_score.into()),
-        Some(min_score.into()),
+        None,
+        None,
+        max_shared_substring,
     );
-
-    // Check for word list errors
+    
+    console::time_end_with_label("word_list_creation");
+    console::log_1(&JsValue::from_str("⏱️ Time spent creating WordList"));
+    
     #[allow(clippy::comparison_chain)]
     if let Some(errors) = word_list.get_source_errors().get("0") {
         if errors.len() == 1 {
+            // Return buffer to the pool before returning error
+            if let Ok(mut pool) = BUFFER_POOL.lock() {
+                pool.return_buffer(normalized_buffer);
+            }
             return Err(JsError::new(&errors[0].to_string()));
         } else if errors.len() > 1 {
             let mut full_error = String::new();
             for error in errors {
                 full_error.push_str(&format!("\n- {error}"));
             }
+            // Return buffer to the pool before returning error
+            if let Ok(mut pool) = BUFFER_POOL.lock() {
+                pool.return_buffer(normalized_buffer);
+            }
             return Err(JsError::new(&full_error));
         }
     }
 
     if word_list.word_id_by_string.is_empty() {
+        // Return buffer to the pool before returning error
+        if let Ok(mut pool) = BUFFER_POOL.lock() {
+            pool.return_buffer(normalized_buffer);
+        }
         return Err(JsError::new("Word list is empty"));
     }
 
+    console::time_with_label("template_string_processing");
     let grid_config =
         generate_grid_config_from_template_string(word_list, &raw_grid_content, min_score.into());
+    console::time_end_with_label("template_string_processing");
+    console::log_1(&JsValue::from_str("⏱️ Time spent processing template string"));
     let result = find_fill_wasm(&grid_config.to_config_ref())
-        .map_err(|_| JsError::new("Unfillable grid"))?;
+        .map_err(|_| {
+            // Return buffer to the pool before returning error
+            if let Ok(mut pool) = BUFFER_POOL.lock() {
+                pool.return_buffer(normalized_buffer.clone());
+            }
+            JsError::new("Unfillable grid")
+        })?;
 
     // Return the filled grid as a string
-    Ok(render_grid(&grid_config.to_config_ref(), &result.choices).replace('.', "#"))
+    console::time_with_label("grid_rendering");
+    let rendered_grid = render_grid(&grid_config.to_config_ref(), &result.choices).replace('.', "#");
+    console::time_end_with_label("grid_rendering");
+    console::log_1(&JsValue::from_str("⏱️ Time spent rendering final grid"));
+    
+    console::time_end_with_label("fill_grid_total");
+    console::log_1(&JsValue::from_str("⏱️ Total time spent in WASM boundary crossing"));
+    
+    // Clean up buffer pool before returning
+    console::time_with_label("buffer_pool_cleanup");
+    // Return the normalized buffer to the pool
+    if let Ok(mut pool) = BUFFER_POOL.lock() {
+        pool.return_buffer(normalized_buffer);
+    } else {
+        console::warn_1(&JsValue::from_str("Failed to return buffer to pool - mutex poisoned"));
+    }
+    console::time_end_with_label("buffer_pool_cleanup");
+    console::log_1(&JsValue::from_str("⏱️ Time spent cleaning up buffer pool"));
+    
+    Ok(rendered_grid)
 }
 
 /// WASM-compatible wrapper for find_fill that avoids using std::time::Instant

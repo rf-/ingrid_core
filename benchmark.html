@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ingrid Core Benchmark</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+        }
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>Ingrid Core Benchmark</h1>
+    
+    <p>Running benchmark tests for the WebAssembly module. Please wait...</p>
+    
+    <div id="results" class="loading">Running benchmarks...</div>
+    
+    <script type="module">
+        import { runBenchmark } from './benchmark.js';
+        
+        const resultsDiv = document.getElementById('results');
+        
+        try {
+            resultsDiv.classList.remove('loading');
+            const benchmarkResults = await runBenchmark();
+            resultsDiv.textContent = benchmarkResults;
+        } catch (error) {
+            resultsDiv.classList.remove('loading');
+            resultsDiv.innerHTML = `<strong>Error running benchmark:</strong>\n${error.message || error}`;
+            console.error('Benchmark error:', error);
+        }
+    </script>
+</body>
+</html>
+
