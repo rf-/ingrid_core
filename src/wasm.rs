@@ -1,3 +1,4 @@
+// No longer need to import find_fill as we use find_fill_wasm
 use crate::grid_config::{generate_grid_config_from_template_string, render_grid, GridConfig};
 use crate::word_list::{WordList, WordListSourceConfig};
 use crate::backtracking_search::{Slot, FillSuccess, FillFailure, WEIGHT_AGE_FACTOR, ArcConsistencyMode};
@@ -8,6 +9,8 @@ use wasm_bindgen::prelude::*;
 use web_sys::console;
 use std::sync::Mutex;
 use std::sync::LazyLock;
+
+const STWL_RAW: &str = include_str!("../resources/spreadthewordlist.dict");
 
 /// A struct to batch multiple strings into a single allocation
 /// to reduce JS-WASM boundary crossings
@@ -146,7 +149,7 @@ pub async fn fill_grid(
     
     // Create a batched strings container to hold all strings with a single allocation
     let mut batched_strings = BatchedStrings::with_capacity(
-        grid_content.len() + if word_list_source.is_none() { 1024 * 1024 } else { 1024 * 1024 }
+        grid_content.len() + if word_list_source.is_none() { STWL_RAW.len() } else { 1024 * 1024 }
     );
     
     // Add grid content to the batch for normalization later
@@ -180,7 +183,7 @@ pub async fn fill_grid(
         }
         None => {
             // Use the built-in word list without extra allocation
-            "".to_string()
+            STWL_RAW.to_string()
         }
     };
     
