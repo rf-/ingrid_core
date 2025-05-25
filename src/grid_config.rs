@@ -675,28 +675,10 @@ pub struct Choice {
 #[allow(dead_code)]
 #[must_use]
 pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
-    let max_x = config
-        .slot_configs
+    let mut grid: Vec<Option<char>> = config
+        .fill
         .iter()
-        .map(|slot_config| match slot_config.direction {
-            Direction::Across => slot_config.start_cell.0 + slot_config.length - 1,
-            Direction::Down => slot_config.start_cell.0,
-        })
-        .max()
-        .expect("Grid must have slots");
-
-    let max_y = config
-        .slot_configs
-        .iter()
-        .map(|slot_config| match slot_config.direction {
-            Direction::Across => slot_config.start_cell.1,
-            Direction::Down => slot_config.start_cell.1 + slot_config.length - 1,
-        })
-        .max()
-        .expect("Grid must have slots");
-
-    let mut grid: Vec<Vec<Option<char>>> = (0..=max_y)
-        .map(|_| (0..=max_x).map(|_| None).collect::<Vec<_>>())
+        .map(|&cell| cell.map(|glyph_id| config.word_list.glyphs[glyph_id as usize]))
         .collect();
 
     for &Choice { slot_id, word_id } in choices {
@@ -715,11 +697,11 @@ pub fn render_grid(config: &GridConfig, choices: &[Choice]) -> String {
                 ),
             };
 
-            grid[y][x] = Some(config.word_list.glyphs[glyph]);
+            grid[y * config.width + x] = Some(config.word_list.glyphs[glyph]);
         }
     }
 
-    grid.iter()
+    grid.chunks(config.width)
         .map(|line| {
             line.iter()
                 .map(|cell| cell.unwrap_or('.').to_string())
