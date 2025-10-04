@@ -99,55 +99,37 @@ impl fmt::Display for WordListError {
     }
 }
 
-/// Configuration describing a source of wordlist entries.
+/// Configuration defining the source of data for a word list.
 #[derive(Debug, Clone)]
-pub enum WordListSourceConfig {
-    Memory {
-        id: String,
-        enabled: bool,
-        words: Vec<(String, u16)>,
-    },
-    File {
-        id: String,
-        enabled: bool,
-        path: OsString,
-    },
-    FileContents {
-        id: String,
-        enabled: bool,
-        contents: &'static str,
-    },
+pub enum WordListSourceConfigProvider {
+    Memory { words: Vec<(String, u16)> },
+    File { path: OsString },
+    FileContents { contents: &'static str },
+}
+
+/// Configuration describing a word list.
+#[derive(Debug, Clone)]
+pub struct WordListSourceConfig {
+    /// The unique, persistent id of this word list.
+    pub id: String,
+    /// Whether this list will affect `words`. Lists that aren't enabled don't even add hidden
+    /// entries, but can still be edited and saved.
+    pub enabled: bool,
+    /// The source of data for this word list.
+    pub provider: WordListSourceConfigProvider,
 }
 
 impl WordListSourceConfig {
-    /// The unique, persistent id of this word list.
-    #[must_use]
-    pub fn id(&self) -> String {
-        match self {
-            WordListSourceConfig::Memory { id, .. }
-            | WordListSourceConfig::FileContents { id, .. }
-            | WordListSourceConfig::File { id, .. } => id.clone(),
-        }
-    }
-
-    /// Whether this list will affect `words`. Lists that aren't enabled don't even add hidden
-    /// entries, but can still be edited and saved.
-    #[must_use]
-    pub fn enabled(&self) -> bool {
-        match self {
-            WordListSourceConfig::Memory { enabled, .. }
-            | WordListSourceConfig::FileContents { enabled, .. }
-            | WordListSourceConfig::File { enabled, .. } => *enabled,
-        }
-    }
-
     /// The last file modification time for this word list, if applicable. If
     /// this returns `None` the list won't be checked for updates.
     #[must_use]
     pub fn modified(&self) -> Option<SystemTime> {
-        match self {
-            WordListSourceConfig::Memory { .. } | WordListSourceConfig::FileContents { .. } => None,
-            WordListSourceConfig::File { path, .. } => fs::metadata(path).ok()?.modified().ok(),
+        match &self.provider {
+            WordListSourceConfigProvider::Memory { .. }
+            | WordListSourceConfigProvider::FileContents { .. } => None,
+            WordListSourceConfigProvider::File { path, .. } => {
+                fs::metadata(path).ok()?.modified().ok()
+            }
         }
     }
 }
@@ -282,8 +264,8 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
     let mut index = HashMap::new();
     let mut errors = vec![];
 
-    let entries = match source {
-        WordListSourceConfig::Memory { words, .. } => {
+    let entries = match &source.provider {
+        WordListSourceConfigProvider::Memory { words, .. } => {
             let mut entries = Vec::with_capacity(words.len());
 
             for (canonical, score) in words.iter().cloned() {
@@ -307,7 +289,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
             entries
         }
 
-        WordListSourceConfig::File { path, .. } => {
+        WordListSourceConfigProvider::File { path, .. } => {
             if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
                 parse_word_list_file_contents(&contents, &mut index, &mut errors)
             } else {
@@ -316,7 +298,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
             }
         }
 
-        WordListSourceConfig::FileContents { contents, .. } => {
+        WordListSourceConfigProvider::FileContents { contents, .. } => {
             parse_word_list_file_contents(contents, &mut index, &mut errors)
         }
     };
@@ -344,7 +326,7 @@ pub fn refresh_source(
 
     let mut new_state = WordListSourceState {
         source_index,
-        id: source.id(),
+        id: source.id.clone(),
         entries,
         mtime,
         index,
@@ -366,7 +348,7 @@ pub fn refresh_source_if_needed(
     source_index: u16,
     source_states: &mut HashMap<String, WordListSourceState>,
 ) {
-    let old_state = source_states.get_mut(&source.id());
+    let old_state = source_states.get_mut(&source.id);
     if let Some(old_state) = old_state {
         let new_mtime = source.modified();
         if new_mtime.is_some() && new_mtime == old_state.mtime {
@@ -697,7 +679,6 @@ impl WordList {
         let mut seen_words: HashSet<u64> = HashSet::new();
 
         for (source_index, source) in source_configs.iter().enumerate() {
-            let is_source_enabled = source.enabled();
             let is_personal_list = self
                 .personal_list_index
                 .map_or(false, |idx| idx == (source_index as u16));
@@ -707,12 +688,12 @@ impl WordList {
             // If the source is disabled, none of its words (or pending updates) should affect the
             // actual wordlist. The exception is if this is the personal word list, in which case
             // we still need to process it to populate the `personal_word_score` fields.
-            if !is_source_enabled && !is_personal_list {
+            if !source.enabled && !is_personal_list {
                 continue;
             }
 
             let source_state = source_states
-                .get(&source.id())
+                .get(&source.id)
                 .expect("source state must be defined after refreshing");
 
             // If there are any pending updates, they take priority over the list items as stored.
@@ -743,7 +724,7 @@ impl WordList {
                         return;
                     }
                 }
-                if !is_source_enabled && is_personal_list {
+                if !source.enabled && is_personal_list {
                     handle_disabled_personal_entry(self, word);
                     return;
                 }
@@ -846,8 +827,7 @@ impl WordList {
             .personal_list_index
             .map_or(false, |idx| idx == source_index);
 
-        let source_id = source_config.id();
-        let Some(source_state) = self.source_states.get_mut(&source_id) else {
+        let Some(source_state) = self.source_states.get_mut(&source_config.id) else {
             panic!("optimistically_update_word: no source state found for id");
         };
 
@@ -866,7 +846,7 @@ impl WordList {
 
         // If the source is disabled, we don't need to update the actual wordlist, except to set
         // `personal_word_score` if applicable.
-        if !source_config.enabled() {
+        if !source_config.enabled {
             if is_personal_list {
                 let (length, word_id) = self.get_word_id_or_add_hidden(&normalized);
                 self.words[length][word_id].personal_word_score = Some(score);
@@ -912,8 +892,7 @@ impl WordList {
 
         // Regardless of whether this change is visible in `words`, we need to buffer it
         // to be persisted to the file.
-        let source_id = source_config.id();
-        let Some(source_state) = self.source_states.get_mut(&source_id) else {
+        let Some(source_state) = self.source_states.get_mut(&source_config.id) else {
             panic!("optimistically_delete_word: no source state found for id");
         };
 
@@ -926,7 +905,7 @@ impl WordList {
 
         // If the source is disabled, we don't need to update the actual wordlist, except to clear
         // `personal_word_score` if applicable.
-        if !source_config.enabled() {
+        if !source_config.enabled {
             if is_personal_list {
                 if let Some(word_id) = self.word_id_by_string.get(normalized) {
                     self.words[normalized.chars().count()][*word_id].personal_word_score = None;
@@ -962,10 +941,10 @@ impl WordList {
         // any of them contain the word.
         for other_source_index in (source_index as usize + 1)..(self.source_configs.len()) {
             let other_source = &self.source_configs[other_source_index];
-            if !other_source.enabled() {
+            if !other_source.enabled {
                 continue;
             }
-            let Some(other_source_state) = self.source_states.get(&other_source.id()) else {
+            let Some(other_source_state) = self.source_states.get(&other_source.id) else {
                 continue;
             };
             let Some(&entry_index) = other_source_state.index.get(&word.normalized_string) else {
@@ -990,7 +969,7 @@ impl WordList {
             .iter()
             .enumerate()
             .find_map(|(index, config)| {
-                if config.id() == source_id {
+                if config.id == source_id {
                     Some(index as u16)
                 } else {
                     None
@@ -1025,11 +1004,11 @@ impl WordList {
             // problem with this process since we'd read it from disk either way, but unless it's
             // disabled we'll definitely want to do a full refresh of the word list when we're done
             // syncing.
-            if source_config.enabled() && source_state.mtime != source_config.modified() {
+            if source_config.enabled && source_state.mtime != source_config.modified() {
                 should_refresh_overall = true;
             }
 
-            let WordListSourceConfig::File { path, .. } = &source_config else {
+            let WordListSourceConfigProvider::File { path, .. } = &source_config.provider else {
                 panic!("sync_updates_to_disk: non-file config had pending changes");
             };
             let path = path.clone();
@@ -1179,14 +1158,16 @@ impl WordList {
         self.source_configs
             .iter()
             .filter_map(|source_config| {
-                let id = source_config.id();
-                let old_mtime = self.source_states.get(&id).and_then(|state| state.mtime);
+                let old_mtime = self
+                    .source_states
+                    .get(&source_config.id)
+                    .and_then(|state| state.mtime);
                 let new_mtime = source_config.modified();
 
                 if old_mtime == new_mtime {
                     None
                 } else {
-                    Some(id)
+                    Some(source_config.id.clone())
                 }
             })
             .collect()
@@ -1214,7 +1195,7 @@ impl Debug for WordList {
 pub mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
     use crate::types::GlobalWordId;
-    use crate::word_list::{WordList, WordListSourceConfig};
+    use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
     use std::collections::HashSet;
     use std::fs;
     use std::path;
@@ -1233,10 +1214,12 @@ pub mod tests {
 
     #[must_use]
     pub fn word_list_source_config() -> Vec<WordListSourceConfig> {
-        vec![WordListSourceConfig::File {
+        vec![WordListSourceConfig {
             id: "0".into(),
             enabled: true,
-            path: dictionary_path().into(),
+            provider: WordListSourceConfigProvider::File {
+                path: dictionary_path().into(),
+            },
         }]
     }
 
@@ -1291,15 +1274,17 @@ pub mod tests {
     #[allow(clippy::unicode_not_nfc)]
     fn test_unusual_characters() {
         let word_list = WordList::new(
-            vec![WordListSourceConfig::Memory {
+            vec![WordListSourceConfig {
                 id: "0".into(),
                 enabled: true,
-                words: vec![
-                    // Non-English character expressed as one two-byte `char`
-                    ("monsutâ".into(), 50),
-                    // Non-English character expressed as two chars w/ combining form
-                    ("hélen".into(), 50),
-                ],
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        // Non-English character expressed as one two-byte `char`
+                        ("monsutâ".into(), 50),
+                        // Non-English character expressed as two chars w/ combining form
+                        ("hélen".into(), 50),
+                    ],
+                },
             }],
             None,
             None,
@@ -1335,14 +1320,16 @@ pub mod tests {
         };
 
         word_list.replace_list(
-            vec![WordListSourceConfig::Memory {
+            vec![WordListSourceConfig {
                 id: "0".into(),
                 enabled: true,
-                words: vec![
-                    ("golf".into(), 0),
-                    ("golfy".into(), 0),
-                    ("golves".into(), 0),
-                ],
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        ("golf".into(), 0),
+                        ("golfy".into(), 0),
+                        ("golves".into(), 0),
+                    ],
+                },
             }],
             None,
             None,
@@ -1401,15 +1388,19 @@ pub mod tests {
     fn test_source_management() {
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::Memory {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -1496,15 +1487,19 @@ pub mod tests {
 
         word_list.replace_list(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
-                WordListSourceConfig::Memory {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
+                    },
                 },
             ],
             None,
@@ -1586,20 +1581,26 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile_1.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile_1.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "2".into(),
                     enabled: true,
-                    path: tmpfile_2.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile_2.path().into(),
+                    },
                 },
             ],
             None,
@@ -1692,15 +1693,19 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile_1.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile_1.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -1750,15 +1755,19 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -1799,15 +1808,19 @@ pub mod tests {
         fs::write(tmpfile.path(), "wolves;52\nsteev;48\nhejjira;20\n").unwrap();
         let (any_more_visible, less_visible_words) = word_list.replace_list(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -1865,15 +1878,19 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -1935,15 +1952,19 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: false,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -2010,15 +2031,19 @@ pub mod tests {
 
         let mut word_list = WordList::new(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: false,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
@@ -2046,15 +2071,19 @@ pub mod tests {
 
         let (any_more_visible, less_visible_words) = word_list.replace_list(
             vec![
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    path: tmpfile.path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: tmpfile.path().into(),
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,

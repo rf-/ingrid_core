@@ -1,7 +1,7 @@
 use clap::Parser;
 use ingrid_core::backtracking_search::find_fill;
 use ingrid_core::grid_config::{generate_grid_config_from_template_string, render_grid};
-use ingrid_core::word_list::{WordList, WordListSourceConfig};
+use ingrid_core::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::fs;
@@ -86,15 +86,17 @@ fn main() -> Result<(), Error> {
 
     let word_list = WordList::new(
         vec![match args.wordlist {
-            Some(wordlist_path) => WordListSourceConfig::File {
+            Some(wordlist_path) => WordListSourceConfig {
                 id: "0".into(),
                 enabled: true,
-                path: wordlist_path.into(),
+                provider: WordListSourceConfigProvider::File {
+                    path: wordlist_path.into(),
+                },
             },
-            None => WordListSourceConfig::FileContents {
+            None => WordListSourceConfig {
                 id: "0".into(),
                 enabled: true,
-                contents: STWL_RAW,
+                provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
             },
         }],
         None,

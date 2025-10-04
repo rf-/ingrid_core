@@ -823,7 +823,7 @@ mod tests {
     };
     use crate::types::GlobalWordId;
     use crate::word_list::tests::{dictionary_path, word_list_source_config};
-    use crate::word_list::{WordList, WordListSourceConfig};
+    use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
     use indoc::indoc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -1256,15 +1256,19 @@ mod tests {
 
         let word_list = WordList::new(
             vec![
-                WordListSourceConfig::Memory {
+                WordListSourceConfig {
                     id: "0".into(),
                     enabled: true,
-                    words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
+                    provider: WordListSourceConfigProvider::Memory {
+                        words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
+                    },
                 },
-                WordListSourceConfig::File {
+                WordListSourceConfig {
                     id: "1".into(),
                     enabled: true,
-                    path: dictionary_path().into(),
+                    provider: WordListSourceConfigProvider::File {
+                        path: dictionary_path().into(),
+                    },
                 },
             ],
             None,
