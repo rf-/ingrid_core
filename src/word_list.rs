@@ -1,3 +1,4 @@
+use either::Either;
 use lazy_static::lazy_static;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
@@ -8,6 +9,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Read;
 use std::time::SystemTime;
 use std::{fmt, fs, io, mem};
+use unicode_categories::UnicodeCategories;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
@@ -69,12 +71,22 @@ pub struct Word {
 /// Given a canonical word string from a dictionary file, turn it into the normalized form we'll
 /// use in the actual fill engine.
 #[must_use]
-pub fn normalize_word(canonical: &str) -> String {
-    canonical
-        .to_lowercase()
-        .nfc() // Normalize Unicode combining forms
-        .filter(|c| !c.is_whitespace())
-        .collect()
+pub fn normalize_word(canonical: &str, settings: &Option<NormalizationSettings>) -> String {
+    let normalized = canonical.to_lowercase();
+
+    let normalized = if settings.as_ref().is_some_and(|s| s.convert_diacritics) {
+        Either::Left(normalized.nfd().filter(|c| !c.is_mark_nonspacing()))
+    } else {
+        Either::Right(normalized.nfc())
+    };
+
+    let normalized = if settings.as_ref().is_some_and(|s| s.strip_punctuation) {
+        Either::Left(normalized.filter(|c| c.is_alphanumeric()))
+    } else {
+        Either::Right(normalized.filter(|c| !c.is_whitespace()))
+    };
+
+    normalized.collect()
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +119,14 @@ pub enum WordListSourceConfigProvider {
     FileContents { contents: &'static str },
 }
 
+#[derive(Debug, Clone)]
+pub struct NormalizationSettings {
+    /// Remove punctuation from the grid representation of words from this source?
+    pub strip_punctuation: bool,
+    /// Convert non-ASCII letters to their ASCII equivalents?
+    pub convert_diacritics: bool,
+}
+
 /// Configuration describing a word list.
 #[derive(Debug, Clone)]
 pub struct WordListSourceConfig {
@@ -117,6 +137,8 @@ pub struct WordListSourceConfig {
     pub enabled: bool,
     /// The source of data for this word list.
     pub provider: WordListSourceConfigProvider,
+    /// Settings controlling normalization of words from this source.
+    pub normalization: Option<NormalizationSettings>,
 }
 
 impl WordListSourceConfig {
@@ -197,6 +219,7 @@ pub struct RawWordListEntry {
 
 fn parse_word_list_file_contents(
     file_contents: &str,
+    normalization: &Option<NormalizationSettings>,
     index: &mut HashMap<String, usize>,
     errors: &mut Vec<WordListError>,
 ) -> Vec<RawWordListEntry> {
@@ -215,7 +238,7 @@ fn parse_word_list_file_contents(
         }
 
         let canonical = line_parts[0].trim().to_string();
-        let normalized = normalize_word(&canonical);
+        let normalized = normalize_word(&canonical, normalization);
         if normalized.is_empty() {
             continue;
         }
@@ -269,7 +292,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
             let mut entries = Vec::with_capacity(words.len());
 
             for (canonical, score) in words.iter().cloned() {
-                let normalized = normalize_word(&canonical);
+                let normalized = normalize_word(&canonical, &source.normalization);
                 if normalized.is_empty() {
                     continue;
                 }
@@ -291,7 +314,12 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
 
         WordListSourceConfigProvider::File { path, .. } => {
             if let Ok(contents) = read_file_tolerating_invalid_encoding(path) {
-                parse_word_list_file_contents(&contents, &mut index, &mut errors)
+                parse_word_list_file_contents(
+                    &contents,
+                    &source.normalization,
+                    &mut index,
+                    &mut errors,
+                )
             } else {
                 errors.push(WordListError::InvalidPath(path.to_string_lossy().into()));
                 vec![]
@@ -299,7 +327,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
         }
 
         WordListSourceConfigProvider::FileContents { contents, .. } => {
-            parse_word_list_file_contents(contents, &mut index, &mut errors)
+            parse_word_list_file_contents(contents, &source.normalization, &mut index, &mut errors)
         }
     };
 
@@ -816,13 +844,14 @@ impl WordList {
         score: u16,
         source_id: &str,
     ) -> Option<(String, u16)> {
-        let normalized = normalize_word(canonical);
+        let source_index = self.find_source_index_for_id(source_id)?;
+        let source_config = &self.source_configs[source_index as usize];
+
+        let normalized = normalize_word(canonical, &source_config.normalization);
         if normalized.is_empty() {
             return None;
         }
 
-        let source_index = self.find_source_index_for_id(source_id)?;
-        let source_config = &self.source_configs[source_index as usize];
         let is_personal_list = self
             .personal_list_index
             .map_or(false, |idx| idx == source_index);
@@ -1050,7 +1079,7 @@ impl WordList {
                 .lines()
                 .filter_map(|line| {
                     let mut line_parts: Vec<String> = line.split(';').map(str::to_string).collect();
-                    let normalized = normalize_word(&line_parts[0]);
+                    let normalized = normalize_word(&line_parts[0], &source_config.normalization);
 
                     if !pending_updates.contains_key(&normalized) {
                         return Some(line.to_string());
@@ -1195,7 +1224,9 @@ impl Debug for WordList {
 pub mod tests {
     use crate::dupe_index::{AnyDupeIndex, DupeIndex};
     use crate::types::GlobalWordId;
-    use crate::word_list::{WordList, WordListSourceConfig, WordListSourceConfigProvider};
+    use crate::word_list::{
+        NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
+    };
     use std::collections::HashSet;
     use std::fs;
     use std::path;
@@ -1220,6 +1251,7 @@ pub mod tests {
             provider: WordListSourceConfigProvider::File {
                 path: dictionary_path().into(),
             },
+            normalization: None,
         }]
     }
 
@@ -1272,7 +1304,7 @@ pub mod tests {
 
     #[test]
     #[allow(clippy::unicode_not_nfc)]
-    fn test_unusual_characters() {
+    fn test_unusual_characters_non_normalized() {
         let word_list = WordList::new(
             vec![WordListSourceConfig {
                 id: "0".into(),
@@ -1283,18 +1315,116 @@ pub mod tests {
                         ("monsutâ".into(), 50),
                         // Non-English character expressed as two chars w/ combining form
                         ("hélen".into(), 50),
+                        // Non-normalizable multibyte characters
+                        ("東京".into(), 50),
                     ],
                 },
+                normalization: None,
             }],
             None,
             None,
             None,
         );
 
-        assert_eq!(
-            word_list.words.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 1, 0, 1]
+        assert_eq!(word_list.words[7][0].normalized_string, "monsutâ");
+        assert_eq!(word_list.words[5][0].normalized_string, "hélen"); // converted to one `char`
+        assert_eq!(word_list.words[2][0].normalized_string, "東京");
+    }
+
+    #[test]
+    #[allow(clippy::unicode_not_nfc)]
+    fn test_unusual_characters_normalized() {
+        let word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        // Non-English character expressed as one two-byte `char`
+                        ("monsutâ".into(), 50),
+                        // Non-English character expressed as two chars w/ combining form
+                        ("hélen".into(), 50),
+                        // Non-normalizable multibyte characters
+                        ("東京".into(), 50),
+                        // Other examples
+                        ("Barça".into(), 50),
+                        ("Straße".into(), 50),
+                        ("København".into(), 50),
+                    ],
+                },
+                normalization: Some(NormalizationSettings {
+                    strip_punctuation: false,
+                    convert_diacritics: true,
+                }),
+            }],
+            None,
+            None,
+            None,
         );
+
+        assert_eq!(word_list.words[7][0].normalized_string, "monsuta");
+        assert_eq!(word_list.words[5][0].normalized_string, "helen");
+        assert_eq!(word_list.words[2][0].normalized_string, "東京");
+        assert_eq!(word_list.words[5][1].normalized_string, "barca");
+        assert_eq!(word_list.words[6][0].normalized_string, "straße"); // not a diacritic
+        assert_eq!(word_list.words[9][0].normalized_string, "københavn"); // not a diacritic
+    }
+
+    #[test]
+    fn test_punctuation_non_normalized() {
+        let word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        ("micro$oft".into(), 50),
+                        ("\"Heroes\"".into(), 50),
+                        ("three word phrase".into(), 50),
+                        ("東京".into(), 50),
+                    ],
+                },
+                normalization: None,
+            }],
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(word_list.words[9][0].normalized_string, "micro$oft");
+        assert_eq!(word_list.words[8][0].normalized_string, "\"heroes\"");
+        assert_eq!(word_list.words[15][0].normalized_string, "threewordphrase");
+        assert_eq!(word_list.words[2][0].normalized_string, "東京");
+    }
+
+    #[test]
+    fn test_punctuation_normalized() {
+        let word_list = WordList::new(
+            vec![WordListSourceConfig {
+                id: "0".into(),
+                enabled: true,
+                provider: WordListSourceConfigProvider::Memory {
+                    words: vec![
+                        ("micro$oft".into(), 50),
+                        ("\"Heroes\"".into(), 50),
+                        ("three word phrase".into(), 50),
+                        ("東京".into(), 50),
+                    ],
+                },
+                normalization: Some(NormalizationSettings {
+                    strip_punctuation: true,
+                    convert_diacritics: false,
+                }),
+            }],
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(word_list.words[8][0].normalized_string, "microoft");
+        assert_eq!(word_list.words[6][0].normalized_string, "heroes");
+        assert_eq!(word_list.words[15][0].normalized_string, "threewordphrase");
+        assert_eq!(word_list.words[2][0].normalized_string, "東京");
     }
 
     #[test]
@@ -1330,6 +1460,7 @@ pub mod tests {
                         ("golves".into(), 0),
                     ],
                 },
+                normalization: None,
             }],
             None,
             None,
@@ -1394,6 +1525,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::Memory {
                         words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1401,6 +1533,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1493,6 +1626,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "0".into(),
@@ -1500,6 +1634,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::Memory {
                         words: vec![("wolves".into(), 70), ("wolvvves".into(), 71)],
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1587,6 +1722,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile_1.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1594,6 +1730,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "2".into(),
@@ -1601,6 +1738,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile_2.path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1699,6 +1837,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile_1.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1706,6 +1845,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1761,6 +1901,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1768,6 +1909,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1814,6 +1956,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1821,6 +1964,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1884,6 +2028,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1891,6 +2036,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -1958,6 +2104,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1965,6 +2112,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -2037,6 +2185,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -2044,6 +2193,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,
@@ -2077,6 +2227,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: tmpfile.path().into(),
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -2084,6 +2235,7 @@ pub mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,

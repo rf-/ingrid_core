@@ -1262,6 +1262,7 @@ mod tests {
                     provider: WordListSourceConfigProvider::Memory {
                         words: vec![("monsutâ".into(), 50), ("âbc".into(), 50)],
                     },
+                    normalization: None,
                 },
                 WordListSourceConfig {
                     id: "1".into(),
@@ -1269,6 +1270,7 @@ mod tests {
                     provider: WordListSourceConfigProvider::File {
                         path: dictionary_path().into(),
                     },
+                    normalization: None,
                 },
             ],
             None,

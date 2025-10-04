@@ -92,11 +92,13 @@ fn main() -> Result<(), Error> {
                 provider: WordListSourceConfigProvider::File {
                     path: wordlist_path.into(),
                 },
+                normalization: None,
             },
             None => WordListSourceConfig {
                 id: "0".into(),
                 enabled: true,
                 provider: WordListSourceConfigProvider::FileContents { contents: STWL_RAW },
+                normalization: None,
             },
         }],
         None,
