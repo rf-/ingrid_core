@@ -7,7 +7,6 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Read;
-use std::time::SystemTime;
 use std::{fmt, fs, io, mem};
 use unicode_categories::UnicodeCategories;
 use unicode_normalization::UnicodeNormalization;
@@ -119,7 +118,7 @@ pub enum WordListSourceConfigProvider {
     FileContents { contents: &'static str },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct NormalizationSettings {
     /// Remove punctuation from the grid representation of words from this source?
     pub strip_punctuation: bool,
@@ -142,15 +141,21 @@ pub struct WordListSourceConfig {
 }
 
 impl WordListSourceConfig {
-    /// The last file modification time for this word list, if applicable. If
-    /// this returns `None` the list won't be checked for updates.
+    /// A hashed value representing the state of this word list last time it was refreshed. If this
+    /// doesn't change, we won't refresh the word list, so it should include anything that signals
+    /// that the result of loading the list might have changed. Returning `None` means we should
+    /// just refresh it every time.
     #[must_use]
-    pub fn modified(&self) -> Option<SystemTime> {
+    pub fn fingerprint(&self) -> Option<u64> {
         match &self.provider {
             WordListSourceConfigProvider::Memory { .. }
             | WordListSourceConfigProvider::FileContents { .. } => None,
             WordListSourceConfigProvider::File { path, .. } => {
-                fs::metadata(path).ok()?.modified().ok()
+                let mut hasher = DefaultHasher::new();
+                path.hash(&mut hasher);
+                fs::metadata(path).ok()?.modified().ok().hash(&mut hasher);
+                self.normalization.hash(&mut hasher);
+                Some(hasher.finish())
             }
         }
     }
@@ -167,7 +172,7 @@ pub struct WordListSourceState {
     pub source_index: u16,
     pub id: String,
     pub entries: Vec<RawWordListEntry>,
-    pub mtime: Option<SystemTime>,
+    pub fingerprint: Option<u64>,
     pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
     pub pending_updates: HashMap<String, PendingWordListUpdate>,
@@ -179,7 +184,7 @@ impl Debug for WordListSourceState {
             .field("source_index", &self.source_index)
             .field("id", &self.id)
             .field("entries", &format!("({} entries)", self.entries.len()))
-            .field("mtime", &self.mtime)
+            .field("fingerprint", &self.fingerprint)
             .field("index", &format!("({} entries)", self.index.len()))
             .field("errors", &self.errors)
             .field("pending_updates", &self.pending_updates)
@@ -276,14 +281,14 @@ fn read_file_tolerating_invalid_encoding(path: &OsString) -> Result<String, io::
 
 pub struct RawWordListContents {
     pub entries: Vec<RawWordListEntry>,
-    pub mtime: Option<SystemTime>,
+    pub fingerprint: Option<u64>,
     pub index: HashMap<String, usize>,
     pub errors: Vec<WordListError>,
 }
 
 #[must_use]
 pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListContents {
-    let mtime = source.modified();
+    let fingerprint = source.fingerprint();
     let mut index = HashMap::new();
     let mut errors = vec![];
 
@@ -333,7 +338,7 @@ pub fn load_words_from_source(source: &WordListSourceConfig) -> RawWordListConte
 
     RawWordListContents {
         entries,
-        mtime,
+        fingerprint,
         index,
         errors,
     }
@@ -347,7 +352,7 @@ pub fn refresh_source(
 ) {
     let RawWordListContents {
         entries,
-        mtime,
+        fingerprint,
         index,
         errors,
     } = load_words_from_source(source);
@@ -356,7 +361,7 @@ pub fn refresh_source(
         source_index,
         id: source.id.clone(),
         entries,
-        mtime,
+        fingerprint,
         index,
         errors,
         pending_updates: HashMap::new(),
@@ -378,8 +383,8 @@ pub fn refresh_source_if_needed(
 ) {
     let old_state = source_states.get_mut(&source.id);
     if let Some(old_state) = old_state {
-        let new_mtime = source.modified();
-        if new_mtime.is_some() && new_mtime == old_state.mtime {
+        let new_fingerprint = source.fingerprint();
+        if new_fingerprint.is_some() && new_fingerprint == old_state.fingerprint {
             old_state.source_index = source_index;
             return;
         }
@@ -1033,7 +1038,7 @@ impl WordList {
             // problem with this process since we'd read it from disk either way, but unless it's
             // disabled we'll definitely want to do a full refresh of the word list when we're done
             // syncing.
-            if source_config.enabled && source_state.mtime != source_config.modified() {
+            if source_config.enabled && source_state.fingerprint != source_config.fingerprint() {
                 should_refresh_overall = true;
             }
 
@@ -1187,13 +1192,13 @@ impl WordList {
         self.source_configs
             .iter()
             .filter_map(|source_config| {
-                let old_mtime = self
+                let old_fingerprint = self
                     .source_states
                     .get(&source_config.id)
-                    .and_then(|state| state.mtime);
-                let new_mtime = source_config.modified();
+                    .and_then(|state| state.fingerprint);
+                let new_fingerprint = source_config.fingerprint();
 
-                if old_mtime == new_mtime {
+                if old_fingerprint == new_fingerprint {
                     None
                 } else {
                     Some(source_config.id.clone())
