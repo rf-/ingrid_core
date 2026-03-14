@@ -5,7 +5,7 @@
 //! branching" concept and randomized restarts.
 
 use float_ord::FloatOrd;
-use rand::distributions::WeightedIndex;
+use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -1196,13 +1196,13 @@ mod tests {
         assert_eq!(
             render_grid(&grid_config.to_config_ref(), &result_1.choices),
             indoc! {"
-            .fas...
-            .abit..
-            airmass
-            troikas
-            sealers
-            ..deme.
-            ...see.
+            .ass...
+            .dais..
+            barmenu
+            attires
+            merlins
+            ..eeee.
+            ...sss.
             "}
             .trim()
         );
@@ -1214,14 +1214,14 @@ mod tests {
             )
         };
 
-        let airmass_id = get_id(&grid_config.word_list, "airmass");
-        let fas_id = get_id(&grid_config.word_list, "fas");
+        let barmenu_id = get_id(&grid_config.word_list, "barmenu");
+        let sss_id = get_id(&grid_config.word_list, "sss");
 
         grid_config
             .word_list
             .dupe_index
             .as_mut()
-            .add_dupe_pair(airmass_id, fas_id);
+            .add_dupe_pair(barmenu_id, sss_id);
 
         let result_2 =
             find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
@@ -1229,13 +1229,13 @@ mod tests {
         assert_eq!(
             render_grid(&grid_config.to_config_ref(), &result_2.choices),
             indoc! {"
-            .zas...
-            .abit..
-            airmass
-            troikas
-            sealers
-            ..dere.
-            ...sse.
+            .ass...
+            .nail..
+            hormone
+            attires
+            merlins
+            ..eeee.
+            ...sss.
             "}
             .trim()
         );
