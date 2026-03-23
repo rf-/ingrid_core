@@ -135,6 +135,10 @@ pub struct GridConfig<'a> {
     /// and the existing letters filled into the grid.
     pub slot_options: &'a [Vec<WordId>],
 
+    /// For each slot, a map from (cell_index, glyph_id) to the subset of `slot_options` that have
+    /// that glyph at that position.
+    pub slot_options_by_glyph: &'a [Vec<Vec<Vec<WordId>>>],
+
     /// The width and height of the grid.
     pub width: usize,
     pub height: usize,
@@ -152,6 +156,7 @@ pub struct OwnedGridConfig {
     pub fill: Vec<Option<GlyphId>>,
     pub slot_configs: Vec<SlotConfig>,
     pub slot_options: Vec<Vec<WordId>>,
+    pub slot_options_by_glyph: Vec<Vec<Vec<Vec<WordId>>>>,
     pub width: usize,
     pub height: usize,
     pub crossing_count: usize,
@@ -167,6 +172,7 @@ impl OwnedGridConfig {
             fill: &self.fill,
             slot_configs: &self.slot_configs,
             slot_options: &self.slot_options,
+            slot_options_by_glyph: &self.slot_options_by_glyph,
             width: self.width,
             height: self.height,
             crossing_count: self.crossing_count,
@@ -538,11 +544,29 @@ pub fn generate_grid_config<'a>(
 
     sort_slot_options(&word_list, &slot_configs, &mut slot_options);
 
+    let slot_options_by_glyph = (0..slot_configs.len())
+        .map(|slot_idx| {
+            let slot_config = &slot_configs[slot_idx];
+            let options = &slot_options[slot_idx];
+            let mut by_glyph = vec![vec![vec![]; word_list.glyphs.len()]; slot_config.length];
+
+            for &word_id in options {
+                let word = &word_list.words[slot_config.length][word_id];
+                for (cell_idx, &glyph_id) in word.glyphs.iter().enumerate() {
+                    by_glyph[cell_idx][glyph_id].push(word_id);
+                }
+            }
+
+            by_glyph
+        })
+        .collect();
+
     OwnedGridConfig {
         word_list,
         fill,
         slot_configs,
         slot_options,
+        slot_options_by_glyph,
         width,
         height,
         crossing_count,

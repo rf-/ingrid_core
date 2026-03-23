@@ -2068,9 +2068,10 @@ pub mod tests {
 
         let (should_refresh, sync_errors) = word_list.sync_updates_to_disk();
         assert!(should_refresh);
-        assert_eq!(
-            sync_errors.get("0").unwrap().to_string(),
-            "Is a directory (os error 21)"
+        let error_string = sync_errors.get("0").unwrap().to_string();
+        assert!(
+            error_string == "Is a directory (os error 21)"
+                || error_string == "Access is denied. (os error 5)"
         );
         assert!(!word_list.needs_sync);
 
@@ -2093,7 +2094,7 @@ pub mod tests {
         assert!(!any_more_visible);
         assert_eq!(less_visible_words, HashSet::new());
 
-        assert_eq!(fs::read_to_string(tmpfile.path()).unwrap(), "Steev;55\n");
+        assert_eq!(fs::read_to_string(tmpfile.path()).unwrap().trim(), "Steev;55");
     }
 
     #[test]
