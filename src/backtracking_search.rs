@@ -1197,12 +1197,12 @@ mod tests {
             render_grid(&grid_config.to_config_ref(), &result_1.choices),
             indoc! {"
             .ass...
-            .glib..
-            alamosa
-            retiree
-            reelers
-            ..seat.
-            ...sss.
+            .gait..
+            primate
+            delimit
+            teeline
+            ..dale.
+            ...rss.
             "}
             .trim()
         );
@@ -1214,14 +1214,14 @@ mod tests {
             )
         };
 
-        let retiree_id = get_id(&grid_config.word_list, "retiree");
-        let sss_id = get_id(&grid_config.word_list, "sss");
+        let delimit_id = get_id(&grid_config.word_list, "delimit");
+        let rss_id = get_id(&grid_config.word_list, "rss");
 
         grid_config
             .word_list
             .dupe_index
             .as_mut()
-            .add_dupe_pair(retiree_id, sss_id);
+            .add_dupe_pair(delimit_id, rss_id);
 
         let result_2 =
             find_fill(&grid_config.to_config_ref(), None, None).expect("Failed to find a fill");
@@ -1230,12 +1230,12 @@ mod tests {
             render_grid(&grid_config.to_config_ref(), &result_2.choices),
             indoc! {"
             .ass...
-            .glia..
-            glamper
-            retinas
-            reelers
-            ..sean.
-            ...sss.
+            .gait..
+            primate
+            oedipal
+            sealily
+            ..hare.
+            ...rss.
             "}
             .trim()
         );

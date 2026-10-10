@@ -1275,7 +1275,7 @@ pub mod tests {
         let word = &word_list.words[5][word_id];
         assert_eq!(word.normalized_string, "skate");
         assert_eq!(word.canonical_string, "skate");
-        assert_eq!(word.score, 50);
+        assert_eq!(word.score, 55);
         assert_eq!(word.hidden, false);
 
         assert!(!word_list.word_id_by_string.contains_key("skates"));
@@ -1286,7 +1286,7 @@ pub mod tests {
         let mut word_list = WordList::new(word_list_source_config(), None, None, None);
 
         assert_eq!(word_list.max_length, None);
-        assert_eq!(word_list.words.len(), 16);
+        assert_eq!(word_list.words.len(), 53);
 
         let &word_id = word_list
             .word_id_by_string
@@ -1300,7 +1300,7 @@ pub mod tests {
         word_list.replace_list(word_list_source_config(), None, Some(5), false);
 
         assert_eq!(word_list.max_length, Some(5));
-        assert_eq!(word_list.words.len(), 16);
+        assert_eq!(word_list.words.len(), 53);
 
         let word = &word_list.words[6][word_id];
         assert_eq!(word.hidden, true);
@@ -1566,7 +1566,7 @@ pub mod tests {
         }
         {
             let wharves = word_list.get_word(wharves_id);
-            assert_eq!(wharves.score, 50);
+            assert_eq!(wharves.score, 55);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(1));
         }
@@ -1613,7 +1613,7 @@ pub mod tests {
 
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -1649,7 +1649,7 @@ pub mod tests {
 
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
         }
@@ -1661,7 +1661,7 @@ pub mod tests {
         }
         {
             let wharves = word_list.get_word(wharves_id);
-            assert_eq!(wharves.score, 50);
+            assert_eq!(wharves.score, 55);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
         }
@@ -1687,7 +1687,7 @@ pub mod tests {
 
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(0));
         }
@@ -1699,7 +1699,7 @@ pub mod tests {
         }
         {
             let wharves = word_list.get_word(wharves_id);
-            assert_eq!(wharves.score, 50);
+            assert_eq!(wharves.score, 55);
             assert_eq!(wharves.hidden, false);
             assert_eq!(wharves.source_index, Some(0));
         }
@@ -1768,7 +1768,7 @@ pub mod tests {
         }
         {
             let what = word_list.get_word(what_id);
-            assert_eq!(what.score, 50);
+            assert_eq!(what.score, 55);
             assert_eq!(what.hidden, false);
             assert_eq!(what.source_index, Some(1));
         }
@@ -1873,7 +1873,7 @@ pub mod tests {
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -1936,7 +1936,7 @@ pub mod tests {
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -1985,7 +1985,7 @@ pub mod tests {
         {
             let wolves = word_list.get_word(wolves_id);
             assert_eq!(wolves.canonical_string, "wolves");
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -2130,7 +2130,7 @@ pub mod tests {
         // The disabled list doesn't affect the actual word list.
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -2155,7 +2155,7 @@ pub mod tests {
         );
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
@@ -2251,7 +2251,7 @@ pub mod tests {
         assert!(less_visible_words.is_empty());
         {
             let wolves = word_list.get_word(wolves_id);
-            assert_eq!(wolves.score, 50);
+            assert_eq!(wolves.score, 55);
             assert_eq!(wolves.hidden, false);
             assert_eq!(wolves.source_index, Some(1));
         }
