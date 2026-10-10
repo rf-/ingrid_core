@@ -161,7 +161,7 @@ pub struct OwnedGridConfig {
 impl OwnedGridConfig {
     #[allow(dead_code)]
     #[must_use]
-    pub fn to_config_ref(&self) -> GridConfig {
+    pub fn to_config_ref(&self) -> GridConfig<'_> {
         GridConfig {
             word_list: &self.word_list,
             fill: &self.fill,
