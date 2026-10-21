@@ -1,5 +1,4 @@
 use either::Either;
-use lazy_static::lazy_static;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -15,24 +14,26 @@ use crate::dupe_index::{AnyDupeIndex, BoxedDupeIndex, DupeIndex};
 use crate::types::{GlobalWordId, GlyphId, WordId};
 use crate::MAX_SLOT_LENGTH;
 
-lazy_static! {
-    /// Completely arbitrary mapping from letter to point value.
-    static ref LETTER_POINTS: HashMap<char, u16> = {
-        let chars_and_scores: Vec<(&str, u16)> = vec![
-            ("aeilnorstu", 1),
-            ("dg", 2),
-            ("bcmp", 3),
-            ("fhvwy", 4),
-            ("k", 5),
-            ("jx", 8),
-            ("qz", 10),
-        ];
-        chars_and_scores
-            .iter()
-            .flat_map(|(chars_str, score)| chars_str.chars().map(|char| (char, *score)))
-            .collect()
-    };
+/// Completely arbitrary mapping from letter to point value.
+#[must_use]
+pub fn default_letter_points() -> HashMap<char, u16> {
+    let chars_and_scores: Vec<(&str, u16)> = vec![
+        ("aeilnorstu", 1),
+        ("dg", 2),
+        ("bcmp", 3),
+        ("fhvwy", 4),
+        ("k", 5),
+        ("jx", 8),
+        ("qz", 10),
+    ];
+    chars_and_scores
+        .iter()
+        .flat_map(|(chars_str, score)| chars_str.chars().map(|char| (char, *score)))
+        .collect()
 }
+
+/// The point value assigned to a letter that isn't present in `letter_points`.
+pub const DEFAULT_LETTER_POINT: u16 = 3;
 
 /// A struct representing a word in the word list.
 #[derive(Debug, Clone)]
@@ -425,6 +426,12 @@ pub struct WordList {
     /// The maximum word length provided when configuring the `WordList`, if any.
     pub max_length: Option<usize>,
 
+    /// A map from a letter to the point value used when computing a word's `letter_score`.
+    pub letter_points: HashMap<char, u16>,
+
+    /// The point value used for a letter that isn't present in `letter_points`.
+    pub default_letter_point: u16,
+
     /// Callback run after adding words.
     pub on_update: Option<OnUpdateCallback>,
 
@@ -454,6 +461,28 @@ impl WordList {
         max_length: Option<usize>,
         max_shared_substring: Option<usize>,
     ) -> WordList {
+        WordList::new_with_letter_points(
+            source_configs,
+            personal_list_index,
+            max_length,
+            max_shared_substring,
+            default_letter_points(),
+            DEFAULT_LETTER_POINT,
+        )
+    }
+
+    /// Construct a new `WordList` as `new` does, but with an explicit letter-to-point-value
+    /// mapping to use when computing each word's `letter_score`.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn new_with_letter_points(
+        source_configs: Vec<WordListSourceConfig>,
+        personal_list_index: Option<u16>,
+        max_length: Option<usize>,
+        max_shared_substring: Option<usize>,
+        letter_points: HashMap<char, u16>,
+        default_letter_point: u16,
+    ) -> WordList {
         let mut instance = WordList {
             glyphs: vec![],
             glyph_id_by_char: HashMap::new(),
@@ -461,6 +490,8 @@ impl WordList {
             word_id_by_string: HashMap::new(),
             dupe_index: WordList::instantiate_dupe_index(max_shared_substring),
             max_length,
+            letter_points,
+            default_letter_point,
             on_update: None,
             source_configs: vec![],
             personal_list_index,
@@ -544,7 +575,12 @@ impl WordList {
             letter_score: raw_entry
                 .normalized
                 .chars()
-                .map(|char| LETTER_POINTS.get(&char).copied().unwrap_or(3))
+                .map(|char| {
+                    self.letter_points
+                        .get(&char)
+                        .copied()
+                        .unwrap_or(self.default_letter_point)
+                })
                 .sum(),
             hidden,
             source_index,
@@ -1232,7 +1268,7 @@ pub mod tests {
     use crate::word_list::{
         NormalizationSettings, WordList, WordListSourceConfig, WordListSourceConfigProvider,
     };
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::path;
     use std::path::PathBuf;
@@ -1279,6 +1315,28 @@ pub mod tests {
         assert_eq!(word.hidden, false);
 
         assert!(!word_list.word_id_by_string.contains_key("skates"));
+    }
+
+    #[test]
+    fn test_new_with_letter_points() {
+        let custom_letter_points = HashMap::from([('e', 12)]);
+
+        let word_list = WordList::new_with_letter_points(
+            word_list_source_config(),
+            None,
+            Some(5),
+            None,
+            custom_letter_points,
+            1,
+        );
+
+        let &word_id = word_list
+            .word_id_by_string
+            .get("skate")
+            .expect("word list should include 'skate'");
+        let word = &word_list.words[5][word_id];
+
+        assert_eq!(word.letter_score, 1 + 1 + 1 + 1 + 12);
     }
 
     #[test]
